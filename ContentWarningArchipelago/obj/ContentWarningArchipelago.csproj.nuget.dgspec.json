@@ -5,7 +5,7 @@
   },
   "projects": {
     "C:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\ContentWarningArchipelago.csproj": {
-      "version": "1.0.0",
+      "version": "0.1.0",
       "restore": {
         "projectUniqueName": "C:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\ContentWarningArchipelago.csproj",
         "projectName": "ContentWarningArchipelago",
@@ -20,7 +20,9 @@
           "netstandard2.1"
         ],
         "sources": {
-          "https://api.nuget.org/v3/index.json": {}
+          "https://api.nuget.org/v3/index.json": {},
+          "https://api.nuget.org/v3/index.json": {},
+          "https://nuget.bepinex.dev/v3/index.json": {}
         },
         "frameworks": {
           "netstandard2.1": {
@@ -47,6 +49,19 @@
             "Archipelago.MultiClient.Net": {
               "target": "Package",
               "version": "[6.*, )"
+            },
+            "BepInEx.Core": {
+              "target": "Package",
+              "version": "[5.4.21, )"
+            },
+            "BepInEx.PluginInfoProps": {
+              "target": "Package",
+              "version": "[2.*, )"
+            },
+            "UnityEngine.Modules": {
+              "include": "Compile",
+              "target": "Package",
+              "version": "[2022.3.62, )"
             }
           },
           "imports": [

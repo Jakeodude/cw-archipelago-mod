@@ -3,29 +3,89 @@
   <PropertyGroup>
     <TargetFramework>netstandard2.1</TargetFramework>
     <AssemblyName>ContentWarningArchipelago</AssemblyName>
+    <RootNamespace>ContentWarningArchipelago</RootNamespace>
+    <Product>Content Warning Archipelago</Product>
     <Description>Archipelago Randomizer for Content Warning</Description>
-    <Version>1.0.0</Version>
+    <Version>0.1.0</Version>
+    <!-- Used by BepInEx.PluginInfoProps to generate MyPluginInfo.PLUGIN_GUID -->
+    <BepInExPluginGuid>automagic.cw-archipelago</BepInExPluginGuid>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <LangVersion>latest</LangVersion>
-    
+    <Nullable>enable</Nullable>
+    <!-- BepInEx.PluginInfoProps lives on the BepInEx NuGet feed -->
+    <RestoreAdditionalProjectSources>
+      https://api.nuget.org/v3/index.json;
+      https://nuget.bepinex.dev/v3/index.json
+    </RestoreAdditionalProjectSources>
+
     <GamePath>C:\Program Files (x86)\Steam\steamapps\common\Content Warning</GamePath>
+    <BepInCore>$(GamePath)\BepInEx\core</BepInCore>
+    <Managed>$(GamePath)\Content Warning_Data\Managed</Managed>
+    <OutputFolder>$(GamePath)\BepInEx\plugins</OutputFolder>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);MSB3277</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
+    <!-- Archipelago client library -->
     <PackageReference Include="Archipelago.MultiClient.Net" Version="6.*" />
+    <!-- Generates MyPluginInfo constants (PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION) -->
+    <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
+    <!--
+      BepInEx.Core — provides BepInEx.dll, 0Harmony.dll, MonoMod.Utils.dll for
+      compilation when the game is NOT installed on this machine.
+      When the game IS installed the local HintPath references below take priority
+      and these NuGet assemblies are used only for type resolution.
+    -->
+    <PackageReference Include="BepInEx.Core" Version="5.4.21" />
+    <!--
+      UnityEngine.Modules — provides UnityEngine.dll compile stubs when the game's
+      managed folder is unavailable. Use IncludeAssets="compile" to avoid shipping them.
+    -->
+    <PackageReference Include="UnityEngine.Modules" Version="2022.3.62" IncludeAssets="compile" />
+  </ItemGroup>
 
+  <!--
+    BepInEx core local references (used when game is installed).
+    Falls back to the BepInEx.Core NuGet package above when the files don't exist.
+  -->
+  <ItemGroup Condition="Exists('$(BepInCore)\BepInEx.dll')">
     <Reference Include="BepInEx">
-      <HintPath>$(GamePath)\BepInEx\core\BepInEx.dll</HintPath>
+      <HintPath>$(BepInCore)\BepInEx.dll</HintPath>
     </Reference>
-    <Reference Include="Assembly-CSharp">
-      <HintPath>$(GamePath)\Content Warning_Data\Managed\Assembly-CSharp.dll</HintPath>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInCore)\0Harmony.dll</HintPath>
     </Reference>
-    <Reference Include="UnityEngine">
-      <HintPath>$(GamePath)\Content Warning_Data\Managed\UnityEngine.dll</HintPath>
-    </Reference>
-    <Reference Include="UnityEngine.CoreModule">
-      <HintPath>$(GamePath)\Content Warning_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+    <Reference Include="MonoMod.Utils">
+      <HintPath>$(BepInCore)\MonoMod.Utils.dll</HintPath>
     </Reference>
   </ItemGroup>
+
+  <!--
+    Unity / game references (used when game is installed).
+    Falls back to UnityEngine.Modules NuGet stubs when the files don't exist.
+  -->
+  <ItemGroup Condition="Exists('$(Managed)\Assembly-CSharp.dll')">
+    <Reference Include="Assembly-CSharp">
+      <HintPath>$(Managed)\Assembly-CSharp.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(Managed)\UnityEngine.dll</HintPath>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(Managed)\UnityEngine.CoreModule.dll</HintPath>
+    </Reference>
+    <!-- NOTE: do NOT reference $(Managed)\netstandard.dll here — causes CS0731 cycle. -->
+  </ItemGroup>
+
+  <!-- Copy output DLL to BepInEx plugins folder after build -->
+  <Target Name="MoveDllToPlugins" AfterTargets="Build" Condition="Exists('$(TargetDir)$(TargetName).dll')">
+    <Message Text="Copying $(AssemblyName).dll to $(OutputFolder)..." Importance="high" />
+    <Copy SourceFiles="$(TargetDir)$(TargetName).dll"
+          DestinationFiles="$(OutputFolder)\$(AssemblyName).dll"
+          SkipUnchangedFiles="false" />
+  </Target>
 
 </Project>
