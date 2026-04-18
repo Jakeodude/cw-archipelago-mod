@@ -1,0 +1,10 @@
+{
+  "version": 2,
+  "dgSpecHash": "Dr8uDhjmCHs=",
+  "success": true,
+  "projectFilePath": "C:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\ContentWarningArchipelago.csproj",
+  "expectedPackageFiles": [
+    "C:\\Users\\Jakeo\\.nuget\\packages\\archipelago.multiclient.net\\6.7.1\\archipelago.multiclient.net.6.7.1.nupkg.sha512"
+  ],
+  "logs": []
+}
