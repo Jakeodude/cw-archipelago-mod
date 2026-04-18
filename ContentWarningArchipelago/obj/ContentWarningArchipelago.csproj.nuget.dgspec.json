@@ -58,6 +58,11 @@
               "target": "Package",
               "version": "[2.*, )"
             },
+            "ContentWarning.GameLibs.Steam": {
+              "suppressParent": "All",
+              "target": "Package",
+              "version": "[*-*, )"
+            },
             "UnityEngine.Modules": {
               "include": "Compile",
               "target": "Package",

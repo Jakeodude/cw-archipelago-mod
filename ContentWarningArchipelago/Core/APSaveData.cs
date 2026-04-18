@@ -26,6 +26,65 @@ namespace ContentWarningArchipelago.Core
         /// <summary>AP slot data values cached on connect (read from server).</summary>
         public int  quotaCount        = 5;      // how many quotas the world uses
         public bool viralSensationGoal = true;  // win condition is "Viral Sensation"
+
+        // ------------------------------------------------------------------ Progressive item levels
+        // These are incremented each time the matching AP item is received and
+        // are read every frame by the relevant Harmony patches.
+
+        /// <summary>
+        /// How many "Progressive Oxygen" copies have been received (0–4).
+        /// Each copy adds 60 s to the base oxygen maximum (~500 s).
+        /// </summary>
+        public int oxygenUpgradeLevel = 0;
+
+        /// <summary>
+        /// How many "Progressive Camera" copies have been received (0–3).
+        /// Each copy extends the camera's film duration by 30 s.
+        /// </summary>
+        public int cameraUpgradeLevel = 0;
+
+        /// <summary>
+        /// How many "Progressive Views" copies have been received (0–12).
+        /// Each copy multiplies the score→views conversion by 1.1×.
+        /// </summary>
+        public int viewsMultiplierLevel = 0;
+
+        // ------------------------------------------------------------------ Diving Bell unlocks
+
+        /// <summary>True once "Diving Bell O2 Refill" has been received.</summary>
+        public bool diveBellO2Unlocked = false;
+
+        /// <summary>True once "Diving Bell Charger" has been received.</summary>
+        public bool diveBellChargerUnlocked = false;
+
+        // ------------------------------------------------------------------ Safety gear unlocks
+
+        /// <summary>True once "Rescue Hook" has been received.</summary>
+        public bool rescueHookUnlocked = false;
+
+        /// <summary>True once "Shock Stick" has been received.</summary>
+        public bool shockStickUnlocked = false;
+
+        /// <summary>True once "Defibrillator" has been received.</summary>
+        public bool defibrillatorUnlocked = false;
+
+        // ------------------------------------------------------------------ Currency queues
+        // Money is lobby-shared (only the master client can call AddMoney).
+        // If we receive a money item before RoomStats is ready, or while we are
+        // not the master client, we store it here and drain it in MoneyPatch.
+
+        /// <summary>
+        /// Dollars ($) pending to be added to the shared wallet via
+        /// <c>RoomStatsHolder.AddMoney()</c>. Only the master client drains this.
+        /// </summary>
+        public int pendingMoney = 0;
+
+        /// <summary>
+        /// Meta Coins pending grant. Normally applied immediately via
+        /// <c>MetaProgressionHandler.AddMetaCoins()</c>, but queued here if the
+        /// singleton isn't ready yet.
+        /// </summary>
+        public int pendingMetaCoins = 0;
     }
 
     /// <summary>Static façade that owns the single save-data instance.</summary>

@@ -6,6 +6,7 @@ using BepInEx.Logging;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
 using HarmonyLib;
+using ContentWarningArchipelago.UI;
 
 namespace ContentWarningArchipelago
 {
@@ -20,12 +21,19 @@ namespace ContentWarningArchipelago
         /// <summary>The single ArchipelagoClient instance for the session.</summary>
         public static ArchipelagoClient connection = null!;
 
-        // ------------------------------------------------------------------ AP connection fields (set by the UI)
+        /// <summary>
+        /// BepInEx config binding for AP connection credentials.
+        /// Modelled after BetterOxygen's Config.cs — persists between sessions so
+        /// the player only needs to enter details once.
+        /// </summary>
+        public static APConfig APConfig { get; private set; } = null!;
 
-        public static string apAddress  = "archipelago.gg";
-        public static string apPort     = "38281";
-        public static string apPassword = "";
-        public static string apSlot     = "";
+        // ------------------------------------------------------------------ AP connection helpers (read from config)
+
+        public static string apAddress  => APConfig?.address.Value  ?? "archipelago.gg";
+        public static int    apPort     => APConfig?.port.Value     ?? 38281;
+        public static string apPassword => APConfig?.password.Value ?? "";
+        public static string apSlot     => APConfig?.slot.Value     ?? "";
 
         // ------------------------------------------------------------------ Unity lifecycle
 
@@ -33,6 +41,10 @@ namespace ContentWarningArchipelago
         {
             Logger = base.Logger;
             Logger.LogInfo($"[CWArch] {MyPluginInfo.PLUGIN_GUID} v{MyPluginInfo.PLUGIN_VERSION} loading…");
+
+            // Bind persistent config (BetterOxygen pattern).
+            APConfig = new APConfig(base.Config);
+            Logger.LogInfo($"[CWArch] Config loaded. AP address: {apAddress}:{APConfig.port.Value}");
 
             // Initialise data tables.
             ItemData.Init();
@@ -74,12 +86,7 @@ namespace ContentWarningArchipelago
         /// </summary>
         public static void Connect()
         {
-            if (!int.TryParse(apPort, out int port))
-            {
-                Logger.LogError($"[CWArch] Invalid port: '{apPort}'");
-                return;
-            }
-            _ = connection.TryConnect(apAddress, port, apPassword, apSlot);
+            _ = connection.TryConnect(apAddress, apPort, apPassword, apSlot);
         }
 
         /// <summary>Disconnect from the AP server.</summary>
