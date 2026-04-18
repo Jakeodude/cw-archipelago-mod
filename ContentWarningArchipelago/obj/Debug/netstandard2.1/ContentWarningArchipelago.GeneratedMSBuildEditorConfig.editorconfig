@@ -1,0 +1,8 @@
+is_global = true
+build_property.RootNamespace = ContentWarningArchipelago
+build_property.ProjectDir = C:\Code\cw-archipelago-mod\ContentWarningArchipelago\
+build_property.EnableComHosting = 
+build_property.EnableGeneratedComInterfaceComImportInterop = 
+build_property.CsWinRTUseWindowsUIXamlProjections = false
+build_property.EffectiveAnalysisLevelStyle = 
+build_property.EnableCodeStyleSeverity = 

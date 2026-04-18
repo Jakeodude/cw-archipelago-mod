@@ -1,10 +1,11 @@
 {
   "version": 2,
-  "dgSpecHash": "Dr8uDhjmCHs=",
+  "dgSpecHash": "QfCpuVrxcFk=",
   "success": true,
   "projectFilePath": "C:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\ContentWarningArchipelago.csproj",
   "expectedPackageFiles": [
-    "C:\\Users\\Jakeo\\.nuget\\packages\\archipelago.multiclient.net\\6.7.1\\archipelago.multiclient.net.6.7.1.nupkg.sha512"
+    "C:\\Users\\Jakeo\\.nuget\\packages\\archipelago.multiclient.net\\6.7.1\\archipelago.multiclient.net.6.7.1.nupkg.sha512",
+    "C:\\Users\\Jakeo\\.nuget\\packages\\netstandard.library.ref\\2.1.0\\netstandard.library.ref.2.1.0.nupkg.sha512"
   ],
   "logs": []
 }
