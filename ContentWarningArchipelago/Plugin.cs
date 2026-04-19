@@ -5,6 +5,7 @@ using BepInEx;
 using BepInEx.Logging;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
+using ContentWarningArchipelago.Patches;
 using HarmonyLib;
 using ContentWarningArchipelago.UI;
 
@@ -54,6 +55,10 @@ namespace ContentWarningArchipelago
             var harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             harmony.PatchAll();
 
+            // ModManagerUI lives in a separate assembly — patch it manually at runtime
+            // so we don't need a compile-time reference to that assembly.
+            ModManagerAPPatch.TryApplyPatch(harmony);
+
             Logger.LogInfo("[CWArch] Harmony patches applied.");
         }
 
@@ -81,12 +86,30 @@ namespace ContentWarningArchipelago
         // ------------------------------------------------------------------ Public API
 
         /// <summary>
-        /// Called by UI / debug code to initiate the AP connection.
-        /// Returns immediately; connection happens asynchronously.
+        /// True while an Archipelago connection attempt is in progress.
+        /// Polled each frame by <see cref="UI.APConnectionPanelUI"/> to drive the
+        /// "Connecting…" status label.
         /// </summary>
-        public static void Connect()
+        public static bool isConnecting { get; private set; } = false;
+
+        /// <summary>
+        /// Called by UI / debug code to initiate the AP connection.
+        /// Sets <see cref="isConnecting"/> for the duration of the attempt so that
+        /// the in-game panel can display a "Connecting…" status.
+        /// </summary>
+        public static async void Connect()
         {
-            _ = connection.TryConnect(apAddress, apPort, apPassword, apSlot);
+            if (isConnecting || connection.connected) return;
+
+            isConnecting = true;
+            try
+            {
+                await connection.TryConnect(apAddress, apPort, apPassword, apSlot);
+            }
+            finally
+            {
+                isConnecting = false;
+            }
         }
 
         /// <summary>Disconnect from the AP server.</summary>
