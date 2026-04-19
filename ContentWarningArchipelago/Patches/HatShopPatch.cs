@@ -1,6 +1,6 @@
 // Patches/HatShopPatch.cs
 //
-// Two patches that integrate the hat shop with Archipelago.
+// Four patches that integrate the hat shop with Archipelago.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // PATCH 1 — HatShopStockPatch
@@ -36,10 +36,35 @@
 //   • Call Plugin.SendCheck() to record and transmit the AP location check.
 //   • (Hat session-unlock is handled separately by UnlockHatPatch intercepting
 //     the MetaProgressionHandler.UnlockHat call made by RPCA_BuyHat itself.)
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH 3 — HatShopRestockAPPatch
+//   Target : HatShop.Restock()   [public void, called by RPCA_StockShop on all clients]
+//
+//   When AP is active, skips the vanilla random selection and instead:
+//   1. Separates hats into 'unchecked AP locations' and 'already-checked'.
+//   2. Fills shop slots with unchecked hats first (ensuring the player always
+//      sees locations they haven't bought yet).
+//   3. Pads remaining slots with already-checked hats using a deterministic
+//      shuffle based on savedSeed.
+//   4. Replicates the price-randomisation logic using System.Random(seed).
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH 4 — HatShopRestockLabelPatch
+//   Target : HatShop.RPCA_StockShop(int seed)   [public PunRPC, called on ALL clients]
+//
+//   After the shop is stocked (and Restock() has populated ihat on each slot),
+//   performs an Archipelago Location Scout for all 5 hat location IDs currently
+//   in the shop.  On scout completion, replaces each HatBuyInteractable.nameText
+//   with the AP item name found at that location, so players can see what
+//   Archipelago item they would receive by buying each hat.
 // ─────────────────────────────────────────────────────────────────────────────
 
 using System;
+using System.Collections.Generic;
+using System.Linq;
 using System.Reflection;
+using System.Threading.Tasks;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
 using HarmonyLib;
@@ -178,7 +203,7 @@ namespace ContentWarningArchipelago.Patches
                 int hatIdx = hbi.ihat.runtimeHatIndex;
 
                 // ---- Resolve AP location name ----
-                long locationId = ResolveHatLocationId(hatIdx);
+                long locationId = HatShopRestockAPPatch.ResolveHatLocationId(hatIdx);
 
                 if (locationId < 0)
                 {
@@ -198,26 +223,131 @@ namespace ContentWarningArchipelago.Patches
                 Plugin.Logger.LogError($"[HatBuyAPCheckPatch] Exception in Prefix: {ex}");
             }
         }
+    }
 
-        // ------------------------------------------------------------------
+    // =========================================================================
+    // PATCH 3 — Custom restock: show unchecked AP hat locations first
+    //
+    // Prefix on HatShop.Restock() — when AP is active, replaces the vanilla
+    // random selection with one that prioritises hats whose AP location hasn't
+    // been checked yet (i.e., the player hasn't bought them in this run).
+    //
+    // The vanilla logic:
+    //   UnityEngine.Random.InitState(savedSeed);
+    //   List<Hat> randomNoDuplicates = HatDatabase.instance.hats.GetRandomNoDuplicates(count);
+    //   hatBuyInteractables[i].LoadHat(hat.gameObject, price: Round(base * Rand(0.5–2) / 10) * 10);
+    //
+    // Our replacement:
+    //   • Build unchecked / checked lists.
+    //   • Shuffle both deterministically with System.Random(savedSeed).
+    //   • Fill slots: unchecked first, pad with checked.
+    //   • Compute prices with the same seeded RNG.
+    // =========================================================================
+    [HarmonyPatch]
+    internal static class HatShopRestockAPPatch
+    {
+        static MethodBase? TargetMethod()
+        {
+            var type = AccessTools.TypeByName("HatShop");
+            if (type == null) return null;
+
+            var method = AccessTools.Method(type, "Restock");
+            if (method == null)
+            {
+                Plugin.Logger.LogWarning("[HatShopRestockAPPatch] Could not find 'Restock' on HatShop. Patch skipped.");
+                return null;
+            }
+
+            Plugin.Logger.LogInfo("[HatShopRestockAPPatch] Patching HatShop.Restock");
+            return method;
+        }
+
+        [HarmonyPrefix]
+        private static bool Prefix(object __instance)
+        {
+            if (!Plugin.connection.connected) return true; // vanilla path
+            if (HatDatabase.instance == null) return true;
+
+            try
+            {
+                // ── Read the private savedSeed field ─────────────────────────────────
+                var savedSeedField = AccessTools.Field(__instance.GetType(), "savedSeed");
+                if (savedSeedField == null)
+                {
+                    Plugin.Logger.LogWarning("[HatShopRestockAPPatch] Could not find 'savedSeed'. Allowing original.");
+                    return true;
+                }
+                int seed = (int)savedSeedField.GetValue(__instance);
+
+                // ── Read hatBuyInteractables list via reflection ───────────────────────
+                // (We use __instance as object here; HatShop.hatBuyInteractables is public
+                //  but the patch receives it as 'object' in dynamic-dispatch context.)
+                var hbiField = AccessTools.Field(__instance.GetType(), "hatBuyInteractables");
+                var hatBuyInteractablesList = hbiField?.GetValue(__instance) as List<HatBuyInteractable>;
+                if (hatBuyInteractablesList == null) return true;
+
+                int slotCount = hatBuyInteractablesList.Count;
+                Hat[] allHats = HatDatabase.instance.hats;
+                if (allHats == null || allHats.Length == 0) return true;
+
+                // ── Separate unchecked and checked hat AP locations ────────────────────
+                var uncheckedIndices = new List<int>();
+                var checkedIndices   = new List<int>();
+
+                for (int i = 0; i < allHats.Length; i++)
+                {
+                    long locId = ResolveHatLocationId(i);
+                    bool isChecked = locId < 0 || APSave.IsLocationChecked(locId);
+                    if (isChecked) checkedIndices.Add(i);
+                    else           uncheckedIndices.Add(i);
+                }
+
+                // ── Shuffle both lists deterministically ──────────────────────────────
+                var rng = new System.Random(seed);
+                Shuffle(uncheckedIndices, rng);
+                Shuffle(checkedIndices,   rng);
+
+                // ── Build selection: unchecked first, pad with checked ─────────────────
+                var selection = new List<int>(slotCount);
+                selection.AddRange(uncheckedIndices.Take(slotCount));
+                if (selection.Count < slotCount)
+                    selection.AddRange(checkedIndices.Take(slotCount - selection.Count));
+
+                // ── Load hats into shop slots ──────────────────────────────────────────
+                for (int i = 0; i < slotCount && i < selection.Count; i++)
+                {
+                    Hat hat = allHats[selection[i]];
+                    // Replicate vanilla price: base * Rand[0.5, 2.0], rounded to nearest 10.
+                    double scale = rng.NextDouble() * 1.5 + 0.5; // [0.5, 2.0)
+                    int price = Mathf.RoundToInt(hat.GetBasePrice() * (float)scale / 10f) * 10;
+                    hatBuyInteractablesList[i].LoadHat(hat.gameObject, price);
+                }
+
+                Plugin.Logger.LogInfo(
+                    $"[HatShopRestockAPPatch] Shop stocked — " +
+                    $"{Math.Min(uncheckedIndices.Count, slotCount)} unchecked slot(s), " +
+                    $"{Math.Max(0, slotCount - uncheckedIndices.Count)} checked slot(s).");
+
+                return false; // skip vanilla Restock()
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogError($"[HatShopRestockAPPatch] Exception: {ex}. Allowing original.");
+                return true;
+            }
+        }
+
+        // ── Helpers ─────────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Resolves the AP location ID for the purchased hat.
+        /// Resolves the Archipelago location ID for a hat at the given database index.
         ///
-        /// Strategy 1 (preferred): build "Bought {displayName}" from
-        ///   HatDatabase.instance.hats[hatIdx].displayName and look it up
-        ///   in <see cref="LocationData.NameToId"/>.
-        ///
-        /// Strategy 2 (fallback): use the fixed offset 600 + hatIdx.
-        ///   This works if the HatDatabase array order matches the location
-        ///   table order exactly (both contain 31 hats in the same sequence).
-        ///   A warning is logged so mismatches are visible in the log.
-        ///
-        /// Returns -1 if neither strategy produces a valid location ID.
+        /// Strategy 1: build "Bought {Hat.displayName}" and look it up in LocationData.
+        /// Strategy 2: fallback to the fixed offset BaseId + 600 + hatIdx.
+        /// Returns -1 if neither strategy succeeds.
         /// </summary>
-        private static long ResolveHatLocationId(int hatIdx)
+        internal static long ResolveHatLocationId(int hatIdx)
         {
-            // Strategy 1: displayName lookup
             if (HatDatabase.instance != null
                 && hatIdx >= 0
                 && hatIdx < HatDatabase.instance.hats.Length)
@@ -225,31 +355,131 @@ namespace ContentWarningArchipelago.Patches
                 Hat hat = HatDatabase.instance.hats[hatIdx];
                 if (hat != null && !string.IsNullOrWhiteSpace(hat.displayName))
                 {
-                    string locName = "Bought " + hat.displayName;
-                    long locId = LocationData.GetId(locName);
-                    if (locId >= 0)
-                    {
-                        Plugin.Logger.LogDebug(
-                            $"[HatBuyAPCheckPatch] Resolved via displayName: '{locName}' → {locId}");
-                        return locId;
-                    }
-
-                    Plugin.Logger.LogDebug(
-                        $"[HatBuyAPCheckPatch] displayName lookup missed for '{locName}'. Trying index fallback.");
+                    long locId = LocationData.GetId("Bought " + hat.displayName);
+                    if (locId >= 0) return locId;
                 }
             }
 
-            // Strategy 2: fixed offset fallback
-            long fallbackId = LocationData.BaseId + HatLocationBaseOffset + hatIdx;
-            if (LocationData.IdToName.ContainsKey(fallbackId))
+            // Fixed-offset fallback (BaseId + 600 + hatIdx).
+            long fallback = LocationData.BaseId + 600 + hatIdx;
+            return LocationData.IdToName.ContainsKey(fallback) ? fallback : -1L;
+        }
+
+        private static void Shuffle<T>(List<T> list, System.Random rng)
+        {
+            for (int i = list.Count - 1; i > 0; i--)
             {
-                Plugin.Logger.LogInfo(
-                    $"[HatBuyAPCheckPatch] Using index-based fallback: hatIdx={hatIdx} → {fallbackId} " +
-                    $"('{LocationData.GetName(fallbackId)}').");
-                return fallbackId;
+                int j = rng.Next(i + 1);
+                (list[i], list[j]) = (list[j], list[i]);
+            }
+        }
+    }
+
+    // =========================================================================
+    // PATCH 4 — After stocking, scout AP locations and replace name labels
+    //
+    // Postfix on HatShop.RPCA_StockShop — runs on every client after Restock()
+    // has populated the shop slots.  Performs an async Archipelago Location
+    // Scout for the 5 displayed hat location IDs, then updates each slot's
+    // TextMeshPro nameText with the AP item name the player would receive.
+    // =========================================================================
+    [HarmonyPatch]
+    internal static class HatShopRestockLabelPatch
+    {
+        static MethodBase? TargetMethod()
+        {
+            var type = AccessTools.TypeByName("HatShop");
+            if (type == null)
+            {
+                Plugin.Logger.LogWarning("[HatShopRestockLabelPatch] Could not find 'HatShop'. Patch skipped.");
+                return null;
             }
 
-            return -1L;
+            var method = AccessTools.Method(type, "RPCA_StockShop");
+            if (method == null)
+            {
+                Plugin.Logger.LogWarning("[HatShopRestockLabelPatch] Could not find 'RPCA_StockShop'. Patch skipped.");
+                return null;
+            }
+
+            Plugin.Logger.LogInfo("[HatShopRestockLabelPatch] Patching HatShop.RPCA_StockShop (Postfix)");
+            return method;
+        }
+
+        [HarmonyPostfix]
+        private static void Postfix(object __instance)
+        {
+            if (!Plugin.connection.connected) return;
+            if (Plugin.connection.session == null) return;
+
+            // Retrieve the public hatBuyInteractables list.
+            var hbiField = AccessTools.Field(__instance.GetType(), "hatBuyInteractables");
+            var slots = hbiField?.GetValue(__instance) as List<HatBuyInteractable>;
+            if (slots == null || slots.Count == 0) return;
+
+            // Fire-and-forget async scout + label update.
+            _ = UpdateHatLabelsAsync(slots);
+        }
+
+        private static async Task UpdateHatLabelsAsync(List<HatBuyInteractable> slots)
+        {
+            try
+            {
+                // ── Build slot→locationId mapping ─────────────────────────────────────
+                var locationIds = new List<long>();
+                var slotLocations = new Dictionary<int, long>();
+
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    var hbi = slots[i];
+                    if (hbi == null || hbi.IsEmpty) continue;
+
+                    long locId = HatShopRestockAPPatch.ResolveHatLocationId(hbi.ihat.runtimeHatIndex);
+                    if (locId < 0) continue;
+
+                    locationIds.Add(locId);
+                    slotLocations[i] = locId;
+                }
+
+                if (locationIds.Count == 0)
+                {
+                    Plugin.Logger.LogDebug("[HatShopRestockLabelPatch] No resolvable hat locations — labels not updated.");
+                    return;
+                }
+
+                Plugin.Logger.LogInfo(
+                    $"[HatShopRestockLabelPatch] Scouting {locationIds.Count} hat location(s)…");
+
+                // ── Scout locations ────────────────────────────────────────────────────
+                // ScoutLocationsAsync returns Task<Dictionary<long, ScoutedItemInfo>>.
+                var session = Plugin.connection.session;
+                if (session == null) return;
+
+                var scouted = await session.Locations.ScoutLocationsAsync(locationIds.ToArray());
+                if (scouted == null) return;
+
+                // ── Update name labels ─────────────────────────────────────────────────
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    if (!slotLocations.TryGetValue(i, out long locId)) continue;
+                    if (!scouted.TryGetValue(locId, out var info)) continue;
+
+                    var hbi = slots[i];
+                    if (hbi == null || hbi.IsEmpty || hbi.nameText == null) continue;
+
+                    string apItemName = info.ItemName;
+                    hbi.nameText.text = apItemName;
+
+                    Plugin.Logger.LogInfo(
+                        $"[HatShopRestockLabelPatch] Slot {i}: '{hbi.ihat?.GetName() ?? "?"}' " +
+                        $"→ AP item '{apItemName}'");
+                }
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[HatShopRestockLabelPatch] Label update failed: {ex.Message}");
+            }
         }
     }
 }

@@ -13,6 +13,7 @@ using Archipelago.MultiClient.Net.Helpers;
 using Archipelago.MultiClient.Net.Models;
 using Archipelago.MultiClient.Net.Packets;
 using ContentWarningArchipelago.Data;
+using ContentWarningArchipelago.UI;
 using UnityEngine;
 
 namespace ContentWarningArchipelago.Core
@@ -183,6 +184,9 @@ namespace ContentWarningArchipelago.Core
             string locName = LocationData.GetName(locationId);
             Plugin.Logger.LogInfo($"[AP] Checking location: {locName} ({locationId})");
 
+            // Show a HUD notification so the player sees feedback when a check fires.
+            APNotificationUI.ShowLocationFound(locName);
+
             // Record locally first so we never double-send even if the server call throws.
             APSave.AddLocationChecked(locationId);
 
@@ -244,8 +248,23 @@ namespace ContentWarningArchipelago.Core
                     continue;
                 }
 
-                Plugin.Logger.LogInfo($"[AP] Applying item: {pending.item.ItemName} (id={pending.item.ItemId})");
-                ItemData.HandleReceivedItem(pending.item.ItemId);
+                // Resolve the sender's display name.  For items from our own world the
+                // sender slot is ourself; we pass an empty string so the notification
+                // just shows the item name without a "from" line.
+                string senderName = string.Empty;
+                try
+                {
+                    string localName = session?.Players.ActivePlayer.Name ?? string.Empty;
+                    string srcName   = pending.item.Player.Name;
+                    if (!string.Equals(srcName, localName, StringComparison.OrdinalIgnoreCase))
+                        senderName = srcName;
+                }
+                catch { /* sender resolution is best-effort */ }
+
+                Plugin.Logger.LogInfo(
+                    $"[AP] Applying item: {pending.item.ItemName} (id={pending.item.ItemId})" +
+                    (string.IsNullOrEmpty(senderName) ? "" : $" from '{senderName}'"));
+                ItemData.HandleReceivedItem(pending.item.ItemId, senderName);
                 APSave.IncrementItemIndex();
                 _incomingItems.TryDequeue(out _);
 

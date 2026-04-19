@@ -92,10 +92,21 @@ namespace ContentWarningArchipelago.Data
         /// Called from ArchipelagoClient.IncomingItemHandler on the main thread.
         /// </summary>
         // ======================================================================
-        public static void HandleReceivedItem(long itemId)
+        /// <summary>
+        /// Apply the effect of a received Archipelago item in-game.
+        /// Called from ArchipelagoClient.IncomingItemHandler on the main thread.
+        /// </summary>
+        /// <param name="itemId">The Archipelago item ID to apply.</param>
+        /// <param name="senderName">
+        /// The AP slot name of the player who sent this item.
+        /// Pass empty string (default) when the item comes from the local player's own world;
+        /// the notification will then omit the "from [Player]" line.
+        /// </param>
+        public static void HandleReceivedItem(long itemId, string senderName = "")
         {
             string name = GetName(itemId);
-            Plugin.Logger.LogInfo($"[ItemData] Handling received item: {name} (id={itemId})");
+            Plugin.Logger.LogInfo($"[ItemData] Handling received item: {name} (id={itemId})" +
+                (string.IsNullOrEmpty(senderName) ? "" : $" from '{senderName}'"));
 
             // Update the diving bell status display with the latest item.
             DivingBellAPStatusPatch.LastItemName = name;
@@ -114,7 +125,7 @@ namespace ContentWarningArchipelago.Data
                     APSave.saveData.cameraUpgradeLevel++;
                     APSave.Flush();
                     ApplyCameraUpgrade(APSave.saveData.cameraUpgradeLevel);
-                    APNotificationUI.ShowItemReceived(name);
+                    APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo(
                         $"[ItemData] Progressive Camera level {APSave.saveData.cameraUpgradeLevel} applied.");
                     break;
@@ -129,7 +140,7 @@ namespace ContentWarningArchipelago.Data
                 {
                     APSave.saveData.oxygenUpgradeLevel++;
                     APSave.Flush();
-                    APNotificationUI.ShowItemReceived(name);
+                    APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo(
                         $"[ItemData] Progressive Oxygen level {APSave.saveData.oxygenUpgradeLevel} — " +
                         $"+{APSave.saveData.oxygenUpgradeLevel * 60} s bonus oxygen.");
@@ -146,7 +157,7 @@ namespace ContentWarningArchipelago.Data
                     APSave.saveData.diveBellO2Unlocked = true;
                     APSave.Flush();
                     LateJoinSyncPatch.BroadcastWorldState();
-                    APNotificationUI.ShowItemReceived(name);
+                    APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo("[ItemData] Diving Bell O2 Refill unlocked.");
                     break;
                 }
@@ -161,7 +172,7 @@ namespace ContentWarningArchipelago.Data
                     APSave.saveData.diveBellChargerUnlocked = true;
                     APSave.Flush();
                     LateJoinSyncPatch.BroadcastWorldState();
-                    APNotificationUI.ShowItemReceived(name);
+                    APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo("[ItemData] Diving Bell Charger unlocked.");
                     break;
                 }
@@ -175,7 +186,7 @@ namespace ContentWarningArchipelago.Data
                 {
                     APSave.saveData.viewsMultiplierLevel++;
                     APSave.Flush();
-                    APNotificationUI.ShowItemReceived(name);
+                    APNotificationUI.ShowItemReceived(name, senderName);
                     double mult = System.Math.Pow(1.1, APSave.saveData.viewsMultiplierLevel);
                     Plugin.Logger.LogInfo(
                         $"[ItemData] Progressive Views level {APSave.saveData.viewsMultiplierLevel} — " +
@@ -192,7 +203,7 @@ namespace ContentWarningArchipelago.Data
                 {
                     APSave.saveData.rescueHookUnlocked = true;
                     APSave.Flush();
-                    APNotificationUI.ShowItemReceived(name);
+                    APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo("[ItemData] Rescue Hook unlocked.");
                     break;
                 }
@@ -200,7 +211,7 @@ namespace ContentWarningArchipelago.Data
                 {
                     APSave.saveData.shockStickUnlocked = true;
                     APSave.Flush();
-                    APNotificationUI.ShowItemReceived(name);
+                    APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo("[ItemData] Shock Stick unlocked.");
                     break;
                 }
@@ -208,7 +219,7 @@ namespace ContentWarningArchipelago.Data
                 {
                     APSave.saveData.defibrillatorUnlocked = true;
                     APSave.Flush();
-                    APNotificationUI.ShowItemReceived(name);
+                    APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo("[ItemData] Defibrillator unlocked.");
                     break;
                 }
@@ -220,13 +231,13 @@ namespace ContentWarningArchipelago.Data
                 // pendingMoney which MoneyPatch drains on the next InitShop.
                 // ==============================================================
                 case ItemNames.MoneySmall:
-                    GrantMoney(200, name);
+                    GrantMoney(200, name, senderName);
                     break;
                 case ItemNames.MoneyMedium:
-                    GrantMoney(400, name);
+                    GrantMoney(400, name, senderName);
                     break;
                 case ItemNames.MoneyLarge:
-                    GrantMoney(600, name);
+                    GrantMoney(600, name, senderName);
                     break;
 
                 // ==============================================================
@@ -250,14 +261,14 @@ namespace ContentWarningArchipelago.Data
                 case ItemNames.MonsterSpawn:
                 {
                     Plugin.Logger.LogInfo("[ItemData] Activating Monster Spawn Trap.");
-                    APNotificationUI.ShowItemReceived("⚠ Monster Spawn Trap!");
+                    APNotificationUI.ShowItemReceived("⚠ Monster Spawn Trap!", senderName);
                     TrapHandler.ApplyMonsterSpawnTrap();
                     break;
                 }
                 case ItemNames.RagdollTrap:
                 {
                     Plugin.Logger.LogInfo("[ItemData] Activating Ragdoll Trap.");
-                    APNotificationUI.ShowItemReceived("⚠ Ragdoll Trap!");
+                    APNotificationUI.ShowItemReceived("⚠ Ragdoll Trap!", senderName);
                     TrapHandler.ApplyRagdollTrap(5f);
                     break;
                 }
@@ -278,12 +289,12 @@ namespace ContentWarningArchipelago.Data
         /// immediately (StartingBudget pattern).  Otherwise queues in pendingMoney
         /// for MoneyPatch to drain on the next InitShop call.
         /// </summary>
-        private static void GrantMoney(int amount, string itemName)
+        private static void GrantMoney(int amount, string itemName, string senderName = "")
         {
             // Show a HUD notification. We use ShowItemReceived here because
             // MoneyCellUI.MoneyCellType does not expose a Money/Cash variant
             // (only MetaCoins is confirmed in the game source).
-            APNotificationUI.ShowItemReceived($"+${amount}", "AP Money");
+            APNotificationUI.ShowItemReceived($"+${amount}", senderName);
 
             if (PhotonNetwork.IsMasterClient && SurfaceNetworkHandler.RoomStats != null)
             {

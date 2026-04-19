@@ -87,7 +87,7 @@ namespace ContentWarningArchipelago.UI
         // ================================================================== public API
 
         /// <summary>
-        /// Show a "📦 Item Received" HUD notification for non-currency items
+        /// Show a "Received: [Item Name]" HUD notification for non-currency items
         /// (upgrades, unlocks, traps, etc.).
         /// </summary>
         /// <param name="itemName">Friendly display name of the item.</param>
@@ -95,11 +95,19 @@ namespace ContentWarningArchipelago.UI
         /// Pass empty string when the item is from the local player's own world.</param>
         public static void ShowItemReceived(string itemName, string senderName = "")
         {
-            string line2 = string.IsNullOrEmpty(senderName)
-                ? itemName
-                : $"{itemName}  ←  {senderName}";
+            string line1 = $"Received: {itemName}";
+            string line2 = string.IsNullOrEmpty(senderName) ? "" : $"from {senderName}";
+            SpawnHUDLabel(line1, line2);
+        }
 
-            SpawnHUDLabel("[AP] Item Received!", line2);
+        /// <summary>
+        /// Show a "Location Found: [Location Name]" HUD notification when a
+        /// location check is sent to the Archipelago server.
+        /// </summary>
+        /// <param name="locationName">The AP location name that was checked.</param>
+        public static void ShowLocationFound(string locationName)
+        {
+            SpawnHUDLabel("Location Found:", locationName);
         }
 
         /// <summary>

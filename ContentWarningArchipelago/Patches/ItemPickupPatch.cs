@@ -431,18 +431,15 @@ namespace ContentWarningArchipelago.Patches
                         var propContent = contentField.GetValue(contentEvent);
                         if (propContent != null)
                         {
-                            // Try PropContent.displayName first (matches EntityTypeToLocation keys)
-                            var displayNameField = AccessTools.Field(propContent.GetType(), "displayName");
-                            if (displayNameField != null)
-                                artifactDisplayName = displayNameField.GetValue(propContent)?.ToString();
-
-                            // Fallback: Unity Object.name (ScriptableObject asset name)
-                            if (string.IsNullOrWhiteSpace(artifactDisplayName) && propContent is UnityEngine.Object uo)
+                            // PropContent is a ScriptableObject — it has no 'displayName' field.
+                            // Its asset name (Unity Object.name) is the correct identifier and
+                            // matches the keys used in FilmingLocationData.EntityTypeToLocation.
+                            if (propContent is UnityEngine.Object uo)
                                 artifactDisplayName = uo.name;
 
                             Plugin.Logger.LogDebug(
                                 $"[ContentEvaluatorPatch] ArtifactContentEvent detected: " +
-                                $"displayName='{artifactDisplayName}', ID={eventId}");
+                                $"assetName='{artifactDisplayName}', ID={eventId}");
                         }
                     }
                 }
