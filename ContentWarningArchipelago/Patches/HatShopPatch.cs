@@ -380,12 +380,25 @@ namespace ContentWarningArchipelago.Patches
     //
     // Postfix on HatShop.RPCA_StockShop — runs on every client after Restock()
     // has populated the shop slots.  Performs an async Archipelago Location
-    // Scout for the 5 displayed hat location IDs, then updates each slot's
-    // TextMeshPro nameText with the AP item name the player would receive.
+    // Scout for the 5 displayed hat location IDs, then:
+    //   • Replaces each HatBuyInteractable.nameText with the AP item name.
+    //   • Enables TMP Best Fit / auto-sizing on nameText so long AP names
+    //     don't overflow the sign label.
+    //   • Caches the AP name per slot in ScoutedNames so the hover-tooltip
+    //     patch (HatBuyHoverPatch) can substitute it into hoverText.
     // =========================================================================
     [HarmonyPatch]
     internal static class HatShopRestockLabelPatch
     {
+        /// <summary>
+        /// Maps each HatBuyInteractable to the Archipelago item name scouted
+        /// for its current slot.  Populated by UpdateHatLabelsAsync; cleared
+        /// at the start of every restock so stale entries never survive a
+        /// shop rotation.  Read by HatBuyHoverPatch.
+        /// </summary>
+        internal static readonly Dictionary<HatBuyInteractable, string> ScoutedNames
+            = new Dictionary<HatBuyInteractable, string>();
+
         static MethodBase? TargetMethod()
         {
             var type = AccessTools.TypeByName("HatShop");
@@ -416,6 +429,9 @@ namespace ContentWarningArchipelago.Patches
             var hbiField = AccessTools.Field(__instance.GetType(), "hatBuyInteractables");
             var slots = hbiField?.GetValue(__instance) as List<HatBuyInteractable>;
             if (slots == null || slots.Count == 0) return;
+
+            // Clear stale scouted names from the previous shop rotation.
+            ScoutedNames.Clear();
 
             // Fire-and-forget async scout + label update.
             _ = UpdateHatLabelsAsync(slots);
@@ -468,11 +484,23 @@ namespace ContentWarningArchipelago.Patches
                     if (hbi == null || hbi.IsEmpty || hbi.nameText == null) continue;
 
                     string apItemName = info.ItemName;
+
+                    // ── Set text ───────────────────────────────────────────────────────
                     hbi.nameText.text = apItemName;
+
+                    // ── Enable Best Fit / Auto-Size so long AP names don't overflow ────
+                    // Capture the editor-set font size as the upper bound (min 10 pt).
+                    float originalSize = hbi.nameText.fontSize;
+                    hbi.nameText.enableAutoSizing = true;
+                    hbi.nameText.fontSizeMin      = 1f;
+                    hbi.nameText.fontSizeMax      = Mathf.Max(10f, originalSize);
+
+                    // ── Cache for the hover-tooltip patch ──────────────────────────────
+                    ScoutedNames[hbi] = apItemName;
 
                     Plugin.Logger.LogInfo(
                         $"[HatShopRestockLabelPatch] Slot {i}: '{hbi.ihat?.GetName() ?? "?"}' " +
-                        $"→ AP item '{apItemName}'");
+                        $"→ AP item '{apItemName}' (autoSize max={hbi.nameText.fontSizeMax:F1}pt)");
                 }
             }
             catch (Exception ex)
@@ -480,6 +508,38 @@ namespace ContentWarningArchipelago.Patches
                 Plugin.Logger.LogWarning(
                     $"[HatShopRestockLabelPatch] Label update failed: {ex.Message}");
             }
+        }
+    }
+
+    // =========================================================================
+    // PATCH 5 — Hover tooltip: replace vanilla hat name with scouted AP name
+    //
+    // Postfix on HatBuyInteractable.get_hoverText.
+    //
+    // The vanilla getter returns a localized string that embeds ihat.GetName()
+    // via a {hatName} replacement, e.g.:
+    //   "Buy Balaclava"  /  "Can't afford Balaclava"  /  "Already own Balaclava"
+    //
+    // When AP is connected and UpdateHatLabelsAsync has populated ScoutedNames
+    // for this slot, we swap ihat.GetName() for the AP item name so the player
+    // sees the Archipelago item instead:
+    //   "Buy Progressive Camera"  /  "Can't afford Progressive Camera"  / …
+    // =========================================================================
+    [HarmonyPatch(typeof(HatBuyInteractable), "get_hoverText")]
+    internal static class HatBuyHoverPatch
+    {
+        [HarmonyPostfix]
+        private static void Postfix(HatBuyInteractable __instance, ref string __result)
+        {
+            // Only override when AP is live and we have a scouted name for this slot.
+            if (!Plugin.connection.connected) return;
+            if (string.IsNullOrEmpty(__result)) return;
+            if (!HatShopRestockLabelPatch.ScoutedNames.TryGetValue(__instance, out string apName)) return;
+
+            // Replace the vanilla hat name substring with the AP item name.
+            string hatName = __instance.ihat?.GetName() ?? string.Empty;
+            if (!string.IsNullOrEmpty(hatName))
+                __result = __result.Replace(hatName, apName);
         }
     }
 }

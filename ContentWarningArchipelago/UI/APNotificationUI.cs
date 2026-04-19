@@ -1,13 +1,19 @@
 // UI/APNotificationUI.cs
-// Lightweight HUD notification helper for Archipelago item events.
+// Native HUD notification helper for Archipelago item events.
 //
-// Strategy (two-tier, inspired by MetaProgressionHandler's own notification call):
-//   1. For currency items (money / MetaCoins) the game's built-in
-//      UserInterface.ShowMoneyNotification() is used — it already produces a
-//      polished popup with the correct icon.
-//   2. For all other items (upgrades, unlocks, traps) we locate the player's
-//      existing HUD canvas at runtime and spawn a temporary TMPro label that
-//      fades in and out over ~3 s.
+// Strategy (matching the game's own MetaProgressionHandler / SurfaceNetworkHandler
+// notification calls):
+//   • ALL incoming item notifications  → UserInterface.ShowMoneyNotification with
+//     MoneyCellUI.MoneyCellType.MetaCoins  (chime sound, green styling)
+//   • Outgoing location-check notifications → UserInterface.ShowMoneyNotification
+//     with MoneyCellUI.MoneyCellType.Revenue  (cash-register sound, green styling)
+//
+//   Both methods fall back to SpawnHUDLabel if ShowMoneyNotification throws
+//   (e.g. UI not yet initialised on the main menu).
+//
+// ShowMoneyNotification(string header, string money, MoneyCellType cellType)
+//   header  → displayed in m_messageText  (top / larger line)
+//   money   → displayed in m_moneyText    (bottom / value line)
 //
 // NOTE ON NULLABLE: Unity MonoBehaviours override the == null operator, so C# 8
 // nullable reference types (TextMeshProUGUI?) conflict with Unity's operator.
@@ -87,27 +93,65 @@ namespace ContentWarningArchipelago.UI
         // ================================================================== public API
 
         /// <summary>
-        /// Show a "Received: [Item Name]" HUD notification for non-currency items
-        /// (upgrades, unlocks, traps, etc.).
+        /// Show a native "Received: [Item Name]" popup for any incoming Archipelago
+        /// item (upgrades, unlocks, traps, currency, etc.).
+        ///
+        /// Uses <c>UserInterface.ShowMoneyNotification</c> with
+        /// <c>MoneyCellUI.MoneyCellType.MetaCoins</c> so the popup renders with
+        /// the same chime sound and green styling as the Meta Coins HUD element.
+        ///
+        ///   header (m_messageText) = "Received: {itemName}"
+        ///   money  (m_moneyText)   = "from {senderName}"  — empty when self-sent
+        ///
+        /// Falls back to <see cref="SpawnHUDLabel"/> if the game method throws
+        /// (e.g. the UI singleton is not yet loaded on the main menu).
         /// </summary>
         /// <param name="itemName">Friendly display name of the item.</param>
         /// <param name="senderName">AP slot name of the player who sent it.
         /// Pass empty string when the item is from the local player's own world.</param>
         public static void ShowItemReceived(string itemName, string senderName = "")
         {
-            string line1 = $"Received: {itemName}";
-            string line2 = string.IsNullOrEmpty(senderName) ? "" : $"from {senderName}";
-            SpawnHUDLabel(line1, line2);
+            string header = $"Received: {itemName}";
+            string money  = string.IsNullOrEmpty(senderName) ? "" : $"from {senderName}";
+
+            try
+            {
+                UserInterface.ShowMoneyNotification(header, money, MoneyCellUI.MoneyCellType.MetaCoins);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[APNotif] ShowMoneyNotification (MetaCoins) failed: {ex.Message} — using fallback label.");
+                SpawnHUDLabel(header, money);
+            }
         }
 
         /// <summary>
-        /// Show a "Location Found: [Location Name]" HUD notification when a
-        /// location check is sent to the Archipelago server.
+        /// Show a native "Location Found!" popup when a check is sent to the
+        /// Archipelago server.
+        ///
+        /// Uses <c>UserInterface.ShowMoneyNotification</c> with
+        /// <c>MoneyCellUI.MoneyCellType.Revenue</c> so the popup renders with
+        /// the cash-register sound and green styling, distinct from incoming items.
+        ///
+        ///   header (m_messageText) = "Location Found!"
+        ///   money  (m_moneyText)   = the AP location name
+        ///
+        /// Falls back to <see cref="SpawnHUDLabel"/> if the game method throws.
         /// </summary>
         /// <param name="locationName">The AP location name that was checked.</param>
         public static void ShowLocationFound(string locationName)
         {
-            SpawnHUDLabel("Location Found:", locationName);
+            try
+            {
+                UserInterface.ShowMoneyNotification("Location Found!", locationName, MoneyCellUI.MoneyCellType.Revenue);
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[APNotif] ShowMoneyNotification (Revenue) failed: {ex.Message} — using fallback label.");
+                SpawnHUDLabel("Location Found!", locationName);
+            }
         }
 
         /// <summary>
