@@ -16,14 +16,16 @@
 //   Money items                 → StartingBudget (ShopHandler.m_RoomStats.AddMoney)
 //   MetaCoins                   → MetaProgressionHandler.AddMetaCoins (direct static call)
 //   Traps                       → TrapPatches.TrapHandler (Virality-style RPC dispatch)
+//
+// Progressive stat items (Camera, Stamina) are applied immediately via
+// ProgressionStatsPatch static helpers so the buff takes effect mid-game
+// without requiring a day restart.
 
 using System.Collections.Generic;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Patches;
 using ContentWarningArchipelago.UI;
-using HarmonyLib;
 using Photon.Pun;
-using UnityEngine;
 
 namespace ContentWarningArchipelago.Data
 {
@@ -32,22 +34,23 @@ namespace ContentWarningArchipelago.Data
         public const long BaseId = 98765000L;
 
         // Offsets match item_id_offset in items.py exactly.
-        public const int OffsetProgCamera       = 0;
-        public const int OffsetProgOxygen       = 1;
-        public const int OffsetDivingBellO2     = 2;
-        public const int OffsetDivingBellCharger= 3;
-        public const int OffsetProgViews        = 4;
-        public const int OffsetRescueHook       = 10;
-        public const int OffsetShockStick       = 11;
-        public const int OffsetDefibrillator    = 12;
-        public const int OffsetMoneySmall       = 20;
-        public const int OffsetMoneyMedium      = 21;
-        public const int OffsetMoneyLarge       = 22;
-        public const int OffsetMetaCoinsSmall   = 30;
-        public const int OffsetMetaCoinsMedium  = 31;
-        public const int OffsetMetaCoinsLarge   = 32;
-        public const int OffsetMonsterSpawn     = 40;
-        public const int OffsetRagdollTrap      = 41;
+        public const int OffsetProgCamera        = 0;
+        public const int OffsetProgOxygen        = 1;
+        public const int OffsetDivingBellO2      = 2;
+        public const int OffsetDivingBellCharger = 3;
+        public const int OffsetProgViews         = 4;
+        public const int OffsetProgStamina       = 5;
+        public const int OffsetRescueHook        = 10;
+        public const int OffsetShockStick        = 11;
+        public const int OffsetDefibrillator     = 12;
+        public const int OffsetMoneySmall        = 20;
+        public const int OffsetMoneyMedium       = 21;
+        public const int OffsetMoneyLarge        = 22;
+        public const int OffsetMetaCoinsSmall    = 30;
+        public const int OffsetMetaCoinsMedium   = 31;
+        public const int OffsetMetaCoinsLarge    = 32;
+        public const int OffsetMonsterSpawn      = 40;
+        public const int OffsetRagdollTrap       = 41;
 
         // Bidirectional lookup tables (populated once in Init).
         public static Dictionary<long, string> IdToName { get; private set; } = new();
@@ -60,6 +63,7 @@ namespace ContentWarningArchipelago.Data
             Register(OffsetDivingBellO2,      ItemNames.DivingBellO2);
             Register(OffsetDivingBellCharger, ItemNames.DivingBellCharger);
             Register(OffsetProgViews,         ItemNames.ProgViews);
+            Register(OffsetProgStamina,       ItemNames.ProgStamina);
             Register(OffsetRescueHook,        ItemNames.RescueHook);
             Register(OffsetShockStick,        ItemNames.ShockStick);
             Register(OffsetDefibrillator,     ItemNames.Defibrillator);
@@ -91,17 +95,13 @@ namespace ContentWarningArchipelago.Data
         /// Apply the effect of a received Archipelago item in-game.
         /// Called from ArchipelagoClient.IncomingItemHandler on the main thread.
         /// </summary>
-        // ======================================================================
-        /// <summary>
-        /// Apply the effect of a received Archipelago item in-game.
-        /// Called from ArchipelagoClient.IncomingItemHandler on the main thread.
-        /// </summary>
         /// <param name="itemId">The Archipelago item ID to apply.</param>
         /// <param name="senderName">
         /// The AP slot name of the player who sent this item.
         /// Pass empty string (default) when the item comes from the local player's own world;
         /// the notification will then omit the "from [Player]" line.
         /// </param>
+        // ======================================================================
         public static void HandleReceivedItem(long itemId, string senderName = "")
         {
             string name = GetName(itemId);
@@ -115,19 +115,20 @@ namespace ContentWarningArchipelago.Data
             {
                 // ==============================================================
                 // PROGRESSIVE CAMERA
-                // Each copy extends film duration by 30 s.
-                // OxygenPatch reads oxygenUpgradeLevel; we handle camera via
-                // reflection on the Camera/CameraBody class each time the item
-                // is received, and persist the level for reconnection.
+                // Each copy extends camera battery by 30 s (base 90 s).
+                // ProgressionStatsPatch.CameraUpgradePatch applies on
+                // VideoCamera.ConfigItem; we also call ApplyCameraUpgrade here
+                // to sync any cameras already in-world mid-day.
                 // ==============================================================
                 case ItemNames.ProgCamera:
                 {
                     APSave.saveData.cameraUpgradeLevel++;
                     APSave.Flush();
-                    ApplyCameraUpgrade(APSave.saveData.cameraUpgradeLevel);
+                    ProgressionStatsPatch.ApplyCameraUpgrade(APSave.saveData.cameraUpgradeLevel);
                     APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo(
-                        $"[ItemData] Progressive Camera level {APSave.saveData.cameraUpgradeLevel} applied.");
+                        $"[ItemData] Progressive Camera level {APSave.saveData.cameraUpgradeLevel} — " +
+                        $"battery {90 + APSave.saveData.cameraUpgradeLevel * 30} s.");
                     break;
                 }
 
@@ -179,18 +180,37 @@ namespace ContentWarningArchipelago.Data
 
                 // ==============================================================
                 // PROGRESSIVE VIEWS
-                // ViewsMultiplierPatch.Postfix reads this every time
-                // BigNumbers.GetScoreToViews is called (global, all footage).
+                // ContentEvaluatorPatch multiplies ContentBuffer item scores by
+                // (1.0 + level × 0.1) before GenerateComments converts them to
+                // view counts.  Does NOT affect the quota difficulty display.
                 // ==============================================================
                 case ItemNames.ProgViews:
                 {
                     APSave.saveData.viewsMultiplierLevel++;
                     APSave.Flush();
                     APNotificationUI.ShowItemReceived(name, senderName);
-                    double mult = System.Math.Pow(1.1, APSave.saveData.viewsMultiplierLevel);
+                    float mult = 1.0f + APSave.saveData.viewsMultiplierLevel * 0.1f;
                     Plugin.Logger.LogInfo(
                         $"[ItemData] Progressive Views level {APSave.saveData.viewsMultiplierLevel} — " +
-                        $"{mult:F2}× views multiplier.");
+                        $"{mult:F1}× footage view multiplier.");
+                    break;
+                }
+
+                // ==============================================================
+                // PROGRESSIVE STAMINA
+                // ProgressionStatsPatch.StaminaUpgradePatch applies on
+                // Player.Awake; ApplyStaminaUpgrade syncs the local player
+                // immediately if they are already alive mid-day.
+                // ==============================================================
+                case ItemNames.ProgStamina:
+                {
+                    APSave.saveData.staminaUpgradeLevel++;
+                    APSave.Flush();
+                    ProgressionStatsPatch.ApplyStaminaUpgrade(APSave.saveData.staminaUpgradeLevel);
+                    APNotificationUI.ShowItemReceived(name, senderName);
+                    Plugin.Logger.LogInfo(
+                        $"[ItemData] Progressive Stamina level {APSave.saveData.staminaUpgradeLevel} — " +
+                        $"maxStamina {100 + APSave.saveData.staminaUpgradeLevel * 25}.");
                     break;
                 }
 
@@ -345,62 +365,6 @@ namespace ContentWarningArchipelago.Data
                 APNotificationUI.ShowMoneyReceived("AP Meta Coins", amount,
                     MoneyCellUI.MoneyCellType.MetaCoins);
             }
-        }
-
-        /// <summary>
-        /// Applies the Progressive Camera upgrade in-game.
-        /// Attempts to find the camera film duration field via AccessTools and
-        /// extend it by 30 s per level.
-        ///
-        /// DESIGN: BetterOxygen reads config once on load; we call this each time
-        /// an item arrives (safe since it's called at most 3 times per game).
-        /// </summary>
-        private static void ApplyCameraUpgrade(int level)
-        {
-            // Additional film duration (seconds) granted per level.
-            const float extraPerLevel = 30f;
-
-            // Try common camera/camcorder type names.
-            foreach (string typeName in new[] {
-                "CameraBody", "Camera", "Camcorder",
-                "CameraUpgrades", "VideoCamera" })
-            {
-                var t = AccessTools.TypeByName(typeName);
-                if (t == null) continue;
-
-                // Try instance singleton first.
-                object? instance = null;
-                var instField = AccessTools.Field(t, "instance")
-                             ?? AccessTools.Field(t, "Instance");
-                if (instField?.IsStatic == true)
-                    instance = instField.GetValue(null);
-
-                // Try common film-time field names.
-                foreach (string fname in new[] {
-                    "maxFilmTime", "m_maxFilmTime", "filmDuration",
-                    "recordingTime", "maxRecordingTime", "filmLength" })
-                {
-                    var field = AccessTools.Field(t, fname);
-                    if (field == null || field.FieldType != typeof(float)) continue;
-
-                    object? target = field.IsStatic ? null : instance;
-                    if (!field.IsStatic && target == null) continue;
-
-                    float current = (float)(field.GetValue(target) ?? 0f);
-                    // Set to base + bonus (idempotent for a given level).
-                    float newVal = current + extraPerLevel;
-                    field.SetValue(target, newVal);
-
-                    Plugin.Logger.LogInfo(
-                        $"[ItemData] Camera film time extended by {extraPerLevel} s " +
-                        $"(level {level}, now {newVal} s) via {typeName}.{fname}.");
-                    return;
-                }
-            }
-
-            Plugin.Logger.LogDebug(
-                "[ItemData] Could not find camera film time field — " +
-                "upgrade will take effect after next game restart via save replay.");
         }
     }
 }

@@ -71,6 +71,7 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
+using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
 using Photon.Pun;
 using UnityEngine;
@@ -376,6 +377,33 @@ namespace ContentWarningArchipelago.Patches
 
             try
             {
+                // ── Progressive Views: multiply every BufferedContent.score ───────────
+                // Multiplying the scores here (before GenerateComments converts them via
+                // BigNumbers.GetScoreToViews) boosts extracted-footage view counts only.
+                // The quota display (UI_Views) reads SurfaceNetworkHandler.RoomStats
+                // directly and is completely unaffected by changes to buffer scores.
+                int viewLevel = APSave.saveData.viewsMultiplierLevel;
+                if (viewLevel > 0)
+                {
+                    float viewMult = 1.0f + viewLevel * 0.1f;
+                    var bufListField = AccessTools.Field(buffer.GetType(), "buffer");
+                    var bufList = bufListField?.GetValue(buffer) as IList;
+                    if (bufList != null)
+                    {
+                        foreach (object? bcItem in bufList)
+                        {
+                            if (bcItem == null) continue;
+                            var scoreField = AccessTools.Field(bcItem.GetType(), "score");
+                            if (scoreField == null) continue;
+                            float s = (float)(scoreField.GetValue(bcItem) ?? 0f);
+                            scoreField.SetValue(bcItem, s * viewMult);
+                        }
+                        Plugin.Logger.LogInfo(
+                            $"[ContentEvaluatorPatch] Progressive Views: applied {viewMult:F1}× " +
+                            $"score multiplier (level {viewLevel}) to {bufList.Count} buffer entries.");
+                    }
+                }
+
                 FireFilmingChecks(buffer);
             }
             catch (Exception ex)

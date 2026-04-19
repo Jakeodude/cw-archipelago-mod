@@ -39,9 +39,17 @@ namespace ContentWarningArchipelago.Core
 
         /// <summary>
         /// How many "Progressive Camera" copies have been received (0–3).
-        /// Each copy extends the camera's film duration by 30 s.
+        /// Each copy extends the camera's maximum battery time by 30 s (base 90 s).
+        /// Applied by <c>ProgressionStatsPatch.CameraUpgradePatch</c>.
         /// </summary>
         public int cameraUpgradeLevel = 0;
+
+        /// <summary>
+        /// How many "Progressive Stamina" copies have been received (0–4).
+        /// Sets <c>PlayerController.maxStamina</c> to 100 + level × 25.
+        /// Applied by <c>ProgressionStatsPatch.StaminaUpgradePatch</c>.
+        /// </summary>
+        public int staminaUpgradeLevel = 0;
 
         /// <summary>
         /// How many "Progressive Views" copies have been received (0–12).

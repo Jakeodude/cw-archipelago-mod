@@ -1,0 +1,255 @@
+// Patches/ProgressionStatsPatch.cs
+// Applies Progressive Stamina and Progressive Camera upgrades via Harmony Postfixes.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// STAMINA — StaminaUpgradePatch
+//   Target : Player.Awake (private Unity lifecycle method)
+//
+//   WHY Player.Awake:
+//   PlayerController.Start() sets player.data.currentStamina = maxStamina when
+//   the player spawns.  By patching Player.Awake (which fires before all Start()
+//   calls), we write the upgraded value into PlayerController.maxStamina before
+//   PlayerController.Start() reads it.  The correct stamina cap propagates to
+//   PlayerData automatically — no additional CurrentStamina assignment needed
+//   at spawn time.
+//
+//   Formula : maxStamina = 100 + staminaUpgradeLevel × 25
+//   Sync    : ProgressionStatsPatch.ApplyStaminaUpgrade(level) re-applies to the
+//             live local player when an item arrives mid-game.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// CAMERA — CameraUpgradePatch
+//   Target : VideoCamera.ConfigItem(ItemInstanceData, PhotonView)
+//
+//   WHY ConfigItem:
+//   ConfigItem is the per-item initialisation hook called when a VideoCamera
+//   is configured for a player.  It either loads an existing VideoInfoEntry
+//   (battery state) or creates a new one with maxTime = timeLeft = 90 s.
+//   Patching as Postfix guarantees m_recorderInfoEntry is always non-null by
+//   the time our code runs.
+//
+//   Formula : maxTime = 90 + cameraUpgradeLevel × 30  (timeLeft reset to maxTime)
+//   Sync    : ProgressionStatsPatch.ApplyCameraUpgrade(level) iterates all live
+//             VideoCamera instances when an item arrives mid-day.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// Both sync helpers are public static methods on ProgressionStatsPatch and are
+// called from ItemData.HandleReceivedItem so the buff takes effect immediately
+// without requiring a day restart.
+
+using System.Reflection;
+using HarmonyLib;
+using ContentWarningArchipelago.Core;
+using UnityEngine;
+
+namespace ContentWarningArchipelago.Patches
+{
+    // =========================================================================
+    // STAMINA UPGRADE PATCH
+    // =========================================================================
+
+    /// <summary>
+    /// Postfix on <c>Player.Awake</c>.
+    /// Writes the upgraded <c>maxStamina</c> value into <c>PlayerController</c>
+    /// before <c>PlayerController.Start()</c> copies it into
+    /// <c>player.data.currentStamina</c>.
+    /// </summary>
+    [HarmonyPatch(typeof(Player), "Awake")]
+    internal static class StaminaUpgradePatch
+    {
+        [HarmonyPostfix]
+        private static void Postfix(Player __instance)
+        {
+            if (!Plugin.connection.connected) return;
+
+            int level = APSave.saveData.staminaUpgradeLevel;
+            if (level <= 0) return;
+
+            // refs.controller is not set until Player.Start(); use GetComponent.
+            var controller = __instance.GetComponent<PlayerController>();
+            if (controller == null) return;
+
+            float newMax = 100f + level * 25f;
+            controller.maxStamina = newMax;
+
+            Plugin.Logger.LogInfo(
+                $"[StaminaUpgradePatch] Player.Awake — maxStamina set to {newMax} " +
+                $"(level {level}). PlayerController.Start will initialise currentStamina.");
+        }
+    }
+
+    // =========================================================================
+    // CAMERA UPGRADE PATCH
+    // =========================================================================
+
+    /// <summary>
+    /// Postfix on <c>VideoCamera.ConfigItem</c>.
+    /// After ConfigItem creates or loads the <c>VideoInfoEntry</c>, overrides
+    /// <c>maxTime</c> and <c>timeLeft</c> to <c>90 + cameraUpgradeLevel × 30</c>
+    /// so every camera starts with the fully upgraded, fully charged battery.
+    /// </summary>
+    [HarmonyPatch]
+    internal static class CameraUpgradePatch
+    {
+        static MethodBase? TargetMethod()
+        {
+            var type = AccessTools.TypeByName("VideoCamera");
+            if (type == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[CameraUpgradePatch] Could not find type 'VideoCamera'. Patch skipped.");
+                return null;
+            }
+
+            var method = AccessTools.Method(type, "ConfigItem");
+            if (method != null)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[CameraUpgradePatch] Patching {type.Name}.{method.Name}");
+                return method;
+            }
+
+            Plugin.Logger.LogWarning(
+                "[CameraUpgradePatch] Could not find 'ConfigItem' on VideoCamera. Patch skipped.");
+            return null;
+        }
+
+        [HarmonyPostfix]
+        private static void Postfix(object __instance)
+        {
+            if (!Plugin.connection.connected) return;
+
+            int level = APSave.saveData.cameraUpgradeLevel;
+            if (level <= 0) return;
+
+            ApplyToInstance(__instance, level);
+        }
+
+        // ------------------------------------------------------------------
+        // Internal helper — shared by Postfix and mid-game sync.
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Applies the battery upgrade to a single <c>VideoCamera</c> instance
+        /// by writing to its private <c>m_recorderInfoEntry</c> (a
+        /// <c>VideoInfoEntry</c> with public fields <c>maxTime</c> and
+        /// <c>timeLeft</c>) via <c>AccessTools.Field</c>.
+        /// </summary>
+        internal static void ApplyToInstance(object cameraInstance, int level)
+        {
+            // Reach into VideoCamera.m_recorderInfoEntry (private field).
+            var entryField = AccessTools.Field(cameraInstance.GetType(), "m_recorderInfoEntry");
+            if (entryField == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[CameraUpgradePatch] Could not find 'm_recorderInfoEntry' on VideoCamera.");
+                return;
+            }
+
+            var entry = entryField.GetValue(cameraInstance);
+            if (entry == null)
+            {
+                Plugin.Logger.LogDebug(
+                    "[CameraUpgradePatch] m_recorderInfoEntry is null — camera not fully initialised.");
+                return;
+            }
+
+            // VideoInfoEntry.maxTime and .timeLeft are public float fields
+            // (confirmed from VideoCamera.cs: timeLeft = 90f, maxTime = 90f).
+            var entryType   = entry.GetType();
+            var maxTimeField  = AccessTools.Field(entryType, "maxTime");
+            var timeLeftField = AccessTools.Field(entryType, "timeLeft");
+
+            if (maxTimeField == null || timeLeftField == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[CameraUpgradePatch] Could not find 'maxTime'/'timeLeft' on VideoInfoEntry.");
+                return;
+            }
+
+            float newMax = 90f + level * 30f;
+            maxTimeField.SetValue(entry, newMax);
+            timeLeftField.SetValue(entry, newMax);   // refill to new maximum
+
+            // Mark dirty so Photon syncs the updated values to all clients.
+            AccessTools.Method(entryType, "SetDirty")?.Invoke(entry, null);
+
+            Plugin.Logger.LogInfo(
+                $"[CameraUpgradePatch] Battery → maxTime={newMax} s, " +
+                $"timeLeft={newMax} s (level {level}).");
+        }
+    }
+
+    // =========================================================================
+    // PUBLIC SYNC HELPERS
+    // Called from ItemData.HandleReceivedItem when a progressive item arrives
+    // while the player is already in-game, so the buff applies immediately
+    // without requiring a day restart.
+    // =========================================================================
+
+    /// <summary>
+    /// Static helpers that re-apply progressive stat upgrades to live game
+    /// objects mid-game.  Called by <c>ItemData.HandleReceivedItem</c>.
+    /// </summary>
+    public static class ProgressionStatsPatch
+    {
+        /// <summary>
+        /// Re-applies the Stamina upgrade to the currently alive local player.
+        /// Sets both <c>PlayerController.maxStamina</c> and
+        /// <c>Player.localPlayer.data.currentStamina</c> to the new maximum so
+        /// the player immediately feels the extra sprint capacity.
+        /// </summary>
+        /// <param name="level">Current <c>staminaUpgradeLevel</c> (after increment).</param>
+        public static void ApplyStaminaUpgrade(int level)
+        {
+            if (Player.localPlayer == null)
+            {
+                Plugin.Logger.LogDebug(
+                    "[ProgressionStatsPatch] ApplyStaminaUpgrade: localPlayer is null — " +
+                    "buff will apply on next Player.Awake.");
+                return;
+            }
+
+            var controller = Player.localPlayer.GetComponent<PlayerController>();
+            if (controller == null) return;
+
+            float newMax = 100f + level * 25f;
+            controller.maxStamina = newMax;
+
+            // Also update currentStamina so the bar refills to the new cap immediately.
+            Player.localPlayer.data.currentStamina = newMax;
+
+            Plugin.Logger.LogInfo(
+                $"[ProgressionStatsPatch] Stamina sync — maxStamina={newMax}, " +
+                $"currentStamina={newMax} (level {level}).");
+        }
+
+        /// <summary>
+        /// Re-applies the Camera battery upgrade to every <c>VideoCamera</c>
+        /// currently active in the scene.  Updates <c>maxTime</c> and resets
+        /// <c>timeLeft</c> to the new maximum so cameras in the world are
+        /// immediately charged to the upgraded capacity.
+        /// </summary>
+        /// <param name="level">Current <c>cameraUpgradeLevel</c> (after increment).</param>
+        public static void ApplyCameraUpgrade(int level)
+        {
+            var cameras = Object.FindObjectsOfType<VideoCamera>();
+            if (cameras == null || cameras.Length == 0)
+            {
+                Plugin.Logger.LogDebug(
+                    "[ProgressionStatsPatch] ApplyCameraUpgrade: no VideoCamera instances " +
+                    "in scene — upgrade will apply on next ConfigItem call.");
+                return;
+            }
+
+            foreach (var cam in cameras)
+            {
+                CameraUpgradePatch.ApplyToInstance(cam, level);
+            }
+
+            Plugin.Logger.LogInfo(
+                $"[ProgressionStatsPatch] Camera sync — updated {cameras.Length} camera(s) " +
+                $"to {90 + level * 30} s battery (level {level}).");
+        }
+    }
+}
