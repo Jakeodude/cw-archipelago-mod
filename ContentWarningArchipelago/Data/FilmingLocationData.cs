@@ -1,4 +1,4 @@
-// Data/MonsterFilmingData.cs
+// Data/FilmingLocationData.cs
 //
 // Maps content-event entity type IDs (as used by ContentPolling / ContentBuffer internally)
 // to Archipelago "Filmed X" location names.
@@ -10,36 +10,34 @@
 //   3. These frames are pushed into a ContentBuffer (contentBuffer.PushFrame).
 //   4. ContentEvaluator.EvaluateRecording() scores the recorded ContentBuffer.
 //
-// ENTITY ID DISCOVERY:
-//   The entity type values below are the string representations of the types used
-//   by the game's content evaluation system.  Content Warning identifies filmed
-//   entities via a "ContentType" or similar enum/ID.  The values here use the
-//   most likely class/type names discovered from the game reference assembly scan.
-//   They should be verified against the live game by enabling debug logging in
-//   ContentEvaluatorPatch and checking what type identifiers appear.
-//
-//   The patch in ItemPickupPatch.cs logs every unique type string it encounters
-//   so you can identify missing monsters and add them here.
+// EVENT ID MAPPING (from ContentEventIDMapper.cs):
+//   • IDs 1000–1045 are hardcoded monster / player events (static switch).
+//     These are pre-populated in EntityIdToLocation below.
+//   • IDs outside that range resolve through PropContentDatabase and become
+//     ArtifactContentEvent or PropContentEvent at runtime.
+//     For artifacts, the identity comes from PropContent.displayName and is
+//     looked up via EntityTypeToLocation (the string-name dict).
 //
 // FORMAT: { "EntityTypeName", "Filmed LocationName" }
+//         { ushortId,         "Filmed LocationName" }
 
 using System.Collections.Generic;
 
 namespace ContentWarningArchipelago.Data
 {
-    public static class MonsterFilmingData
+    public static class FilmingLocationData
     {
         // -----------------------------------------------------------------------
         // Primary lookup: content-event type-name string → AP location name.
-        // The key is whatever ToString() or class-name string the content event
-        // exposes as its type identifier.
+        // Used for:
+        //   • Artifact display names extracted from ArtifactContentEvent.content.displayName
+        //     (e.g. "Ribcage" → "Filmed Ribcage")
+        //   • Legacy class-name fallback for any event not in EntityIdToLocation
         // -----------------------------------------------------------------------
         public static readonly Dictionary<string, string> EntityTypeToLocation =
             new Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
         {
             // ==================== MONSTERS ====================
-            // Key = ContentType / entity class name as reported at runtime.
-            // These must match what ContentEvaluatorPatch logs as "Unknown entity type".
             { "Slurper",         "Filmed Slurper"       },
             { "Zombe",           "Filmed Zombe"         },
             { "Worm",            "Filmed Worm"          },
@@ -83,6 +81,7 @@ namespace ContentWarningArchipelago.Data
             { "Ultra Knifo",     "Filmed Ultra Knifo"   },
 
             // ==================== ARTIFACTS ====================
+            // Keys match PropContent.displayName values (or Unity Object.name as fallback).
             { "Ribcage",                "Filmed Ribcage"               },
             { "Skull",                  "Filmed Skull"                 },
             { "Spine",                  "Filmed Spine"                 },
@@ -104,19 +103,58 @@ namespace ContentWarningArchipelago.Data
         };
 
         // -----------------------------------------------------------------------
-        // Fallback lookup by numeric content-type ID.
-        // Populate this once actual IDs are known from in-game debug logging.
-        // The patch logs "Unknown entity type: <N>" for any ID not in this table.
+        // Direct ID lookup: ushort content-event ID → AP location name.
+        //
+        // Pre-populated from the hardcoded switch in ContentEventIDMapper.GetContentEventGenerated().
+        // Only monster/artifact filming IDs are included; player and misc events
+        // (PlayerContentEvent, PlayerDeadContentEvent, etc.) are intentionally omitted.
+        //
+        // Artifact IDs are NOT listed here because they are dynamically assigned by
+        // PropContentDatabase and can change between game versions. Artifacts are
+        // identified instead by PropContent.displayName via EntityTypeToLocation.
         // -----------------------------------------------------------------------
-        public static readonly Dictionary<int, string> EntityIdToLocation =
-            new Dictionary<int, string>
+        public static readonly Dictionary<ushort, string> EntityIdToLocation =
+            new Dictionary<ushort, string>
         {
-            // Placeholder — fill these in after observing debug logs.
-            // Example: { 1, "Filmed Slurper" },
+            // ==================== MONSTERS (IDs from ContentEventIDMapper) ====================
+            { 1012, "Filmed Barnacle Ball"  },  // BarnacleBallContentEvent
+            { 1002, "Filmed Big Slap"       },  // BigSlapAgroContentEvent
+            { 1001, "Filmed Big Slap"       },  // BigSlapPeacefulContentEvent
+            { 1043, "Filmed Black Hole Bot" },  // BlackHoleBotContentEvent
+            { 1030, "Filmed Bomber"         },  // BombContentEvent
+            { 1017, "Filmed Bomber"         },  // BombsContentEvent (multi-bomb variant)
+            { 1026, "Filmed Cam Creep"      },  // CamCreepContentEvent
+            { 1024, "Filmed Dog"            },  // DogContentEvent
+            { 1008, "Filmed Ear"            },  // EarContentEvent
+            { 1025, "Filmed Eye Guy"        },  // EyeGuyContentEvent
+            { 1041, "Filmed Fire"           },  // FireMonsterContentEvent
+            { 1004, "Filmed Flicker"        },  // FlickerContentEvent
+            { 1037, "Filmed Harpooner"      },  // HarpoonerContentEvent
+            { 1005, "Filmed Jelly"          },  // JelloContentEvent
+            { 1006, "Filmed Knifo"          },  // KnifoContentEvent
+            { 1018, "Filmed Larva"          },  // LarvaContentEvent
+            { 1045, "Filmed Mime"           },  // MimeContentEvent
+            { 1009, "Filmed Mouthe"         },  // MouthContentEvent
+            { 1042, "Filmed Puffo"          },  // PuffoContentEvent
+            { 1035, "Filmed Button Robot"   },  // RobotButtonContentEvent
+            { 1010, "Filmed Slurper"        },  // SlurperContentEvent
+            { 1040, "Filmed Snail Spawner"  },  // SnailSpawnerContentEvent
+            { 1011, "Filmed Snatcho"        },  // SnatchoContentEvent
+            { 1019, "Filmed Spider"         },  // SpiderContentEvent
+            { 1038, "Filmed Streamer"       },  // StreamerContentEvent
+            { 1013, "Filmed Whisk"          },  // ToolkitWhiskContentEvent
+            { 1036, "Filmed Arms"           },  // WalloContentEvent
+            { 1007, "Filmed Weeping"        },  // WeepingContentEvent
+            { 1014, "Filmed Weeping"        },  // WeepingContentEventCaptured
+            { 1015, "Filmed Weeping"        },  // WeepingContentEventFail
+            { 1016, "Filmed Weeping"        },  // WeepingContentEventSuccess
+            { 1039, "Filmed Worm"           },  // WormContentEvent
+            { 1003, "Filmed Zombe"          },  // ZombieContentEvent
         };
 
         /// <summary>
         /// Tries to resolve an AP location name from a string entity type identifier.
+        /// Used for artifact displayName lookups and class-name fallback.
         /// Returns null if no match found.
         /// </summary>
         public static string? TryGetLocationByTypeName(string typeName)
@@ -126,10 +164,11 @@ namespace ContentWarningArchipelago.Data
         }
 
         /// <summary>
-        /// Tries to resolve an AP location name from a numeric entity type ID.
-        /// Returns null if no match found.
+        /// Tries to resolve an AP location name from a ushort content-event ID.
+        /// Covers the hardcoded monster IDs from ContentEventIDMapper.
+        /// Returns null if no match found (e.g. dynamic artifact IDs).
         /// </summary>
-        public static string? TryGetLocationById(int typeId)
+        public static string? TryGetLocationById(ushort typeId)
         {
             return EntityIdToLocation.TryGetValue(typeId, out var loc) ? loc : null;
         }

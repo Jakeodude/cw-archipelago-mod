@@ -43,7 +43,19 @@
 //     a) "Any Extraction"          — fires once per successful extraction
 //     b) "Extracted Footage on Day N" — fires for the current in-game day
 //     c) "Filmed <Monster/Artifact>"  — fires for each entity type found in
-//        the ContentBuffer, looked up in MonsterFilmingData.
+//        the ContentBuffer, looked up in FilmingLocationData.
+//
+//   CONTENT EVENT DISPATCH LOGIC:
+//     ContentEventIDMapper.GetContentEvent(id) returns:
+//       • IDs 1000–1045 → specific MonsterContentEvent subclasses (SlurperContentEvent, etc.)
+//       • Other IDs     → ArtifactContentEvent { content = PropContent }  (isArtifact == true)
+//                         PropContentEvent     { content = PropContent }  (isArtifact == false)
+//
+//     FireFilmingChecks handles all three event types:
+//       1. Reads contentEvent.GetID() as ushort for direct monster ID matching.
+//       2. Detects ArtifactContentEvent by class name; drills into content.displayName
+//          via reflection to identify which artifact was filmed.
+//       3. Falls back to class-name string matching for any uncovered event type.
 //
 //   The ExtractVideoMachine's concrete states are not needed; patching this
 //   single evaluator method covers all code paths that process footage.
@@ -252,7 +264,7 @@ namespace ContentWarningArchipelago.Patches
     //
     // Handles both:
     //   • Extraction location checks  ("Any Extraction", "Extracted Footage on Day N")
-    //   • Filming location checks     ("Filmed Slurper", "Filmed Zombe", etc.)
+    //   • Filming location checks     ("Filmed Slurper", "Filmed Skull", etc.)
     //
     // Confirmed signature (VideoDebugPage.cs):
     //   bool ContentEvaluator.EvaluateRecording(CameraRecording recording, out ContentBuffer buffer)
@@ -339,16 +351,23 @@ namespace ContentWarningArchipelago.Patches
 
         /// <summary>
         /// Iterates the ContentBuffer's <c>buffer</c> list (List&lt;BufferedContent&gt;),
-        /// navigates the known field chain
-        ///   BufferedContent.frame → ContentEventFrame.contentEvent → ContentEvent subclass,
-        /// and fires "Filmed X" AP location checks for each distinct entity type found.
+        /// navigates the known field chain:
+        ///   BufferedContent.frame → ContentEventFrame.contentEvent → ContentEvent subclass
         ///
-        /// Field names confirmed from game source (MonsterEventCombiner.cs uses the same path):
-        ///   ContentBuffer.buffer          — List&lt;BufferedContent&gt;
-        ///   BufferedContent.frame         — ContentEventFrame
-        ///   ContentEventFrame.contentEvent — ContentEvent (MonsterContentEvent subclass at runtime)
-        ///   contentEvent.GetType().Name   — entity class name (matches MonsterFilmingData keys)
-        ///   contentEvent.GetID()          — ushort type ID (numeric fallback)
+        /// For each event it:
+        ///   1. Reads contentEvent.GetID() as a ushort for direct monster ID matching.
+        ///   2. Detects ArtifactContentEvent by class name; uses reflection to access
+        ///      the nested PropContent object and read its displayName field to
+        ///      identify the specific artifact filmed.
+        ///   3. Calls TryFireEntityCheck with all gathered context to resolve and
+        ///      send the AP location check with 3-level priority fallback.
+        ///
+        /// Field names confirmed from game source:
+        ///   ContentBuffer.buffer           — List&lt;BufferedContent&gt;
+        ///   BufferedContent.frame          — ContentEventFrame (struct)
+        ///   ContentEventFrame.contentEvent — ContentEvent (runtime subclass)
+        ///   ArtifactContentEvent.content   — PropContent (ScriptableObject)
+        ///   PropContent.displayName        — string artifact display name
         /// </summary>
         private static void FireFilmingChecks(object buffer)
         {
@@ -370,62 +389,120 @@ namespace ContentWarningArchipelago.Patches
             {
                 if (bufferedContent == null) continue;
 
-                // BufferedContent.frame → ContentEventFrame
+                // BufferedContent.frame → ContentEventFrame (struct)
                 var frameField = AccessTools.Field(bufferedContent.GetType(), "frame");
                 if (frameField == null) continue;
                 var frame = frameField.GetValue(bufferedContent);
                 if (frame == null) continue;
 
-                // ContentEventFrame.contentEvent → ContentEvent (MonsterContentEvent subclass)
+                // ContentEventFrame.contentEvent → ContentEvent subclass
                 var contentEventField = AccessTools.Field(frame.GetType(), "contentEvent");
                 if (contentEventField == null) continue;
                 var contentEvent = contentEventField.GetValue(frame);
                 if (contentEvent == null) continue;
 
-                // Primary identifier: runtime class name (e.g. "Slurper", "Zombe")
-                string rawName = contentEvent.GetType().Name;
-
-                // Numeric fallback: contentEvent.GetID() returns ushort
-                int typeId = -1;
+                // --- Resolve ushort event ID via contentEvent.GetID() ---
+                ushort eventId = 0;
                 var getIdMethod = contentEvent.GetType().GetMethod(
                     "GetID", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 if (getIdMethod != null)
                 {
-                    var raw = getIdMethod.Invoke(contentEvent, null);
-                    if (raw != null) typeId = Convert.ToInt32(raw);
+                    var rawId = getIdMethod.Invoke(contentEvent, null);
+                    if (rawId != null)
+                    {
+                        try { eventId = Convert.ToUInt16(rawId); }
+                        catch { /* ignore overflow; eventId stays 0 */ }
+                    }
                 }
 
-                TryFireEntityCheck(rawName, typeId, fired);
+                // --- Detect ArtifactContentEvent: extract PropContent.displayName ---
+                // ArtifactContentEvent is generated by ContentEventIDMapper when the ID
+                // resolves to a PropContent with isArtifact == true.  The class name is
+                // always "ArtifactContentEvent" regardless of which artifact it is, so
+                // we must read the nested 'content' field to find the artifact identity.
+                string? artifactDisplayName = null;
+                string rawName = contentEvent.GetType().Name;
+
+                if (rawName.Equals("ArtifactContentEvent", StringComparison.Ordinal))
+                {
+                    var contentField = AccessTools.Field(contentEvent.GetType(), "content");
+                    if (contentField != null)
+                    {
+                        var propContent = contentField.GetValue(contentEvent);
+                        if (propContent != null)
+                        {
+                            // Try PropContent.displayName first (matches EntityTypeToLocation keys)
+                            var displayNameField = AccessTools.Field(propContent.GetType(), "displayName");
+                            if (displayNameField != null)
+                                artifactDisplayName = displayNameField.GetValue(propContent)?.ToString();
+
+                            // Fallback: Unity Object.name (ScriptableObject asset name)
+                            if (string.IsNullOrWhiteSpace(artifactDisplayName) && propContent is UnityEngine.Object uo)
+                                artifactDisplayName = uo.name;
+
+                            Plugin.Logger.LogDebug(
+                                $"[ContentEvaluatorPatch] ArtifactContentEvent detected: " +
+                                $"displayName='{artifactDisplayName}', ID={eventId}");
+                        }
+                    }
+                }
+
+                TryFireEntityCheck(rawName, eventId, artifactDisplayName, fired);
             }
         }
 
         /// <summary>
         /// Resolves a filmed entity to an AP location name and sends the check.
-        /// Tries the raw class name first, then strips a "ContentEvent" suffix as a
-        /// fallback (handles both "Slurper" and "SlurperContentEvent" style names),
-        /// then falls back to the numeric ID.
+        ///
+        /// Priority order:
+        ///   1. <b>Specific ID match</b>  — looks up <paramref name="id"/> directly in
+        ///      <see cref="FilmingLocationData.EntityIdToLocation"/> (covers all hardcoded
+        ///      monster event IDs 1000–1045 from ContentEventIDMapper).
+        ///   2. <b>Artifact name match</b> — if <paramref name="artifactDisplayName"/> is
+        ///      non-null (set when the event is an ArtifactContentEvent), looks up the
+        ///      display name in <see cref="FilmingLocationData.EntityTypeToLocation"/>.
+        ///   3. <b>Class name match</b>   — looks up the raw runtime class name, then
+        ///      retries after stripping a trailing "ContentEvent" suffix, to handle both
+        ///      "Slurper" and "SlurperContentEvent" style names from any event not
+        ///      already resolved above.
         /// </summary>
-        private static void TryFireEntityCheck(string rawName, int typeId, HashSet<string> fired)
+        private static void TryFireEntityCheck(
+            string rawName,
+            ushort id,
+            string? artifactDisplayName,
+            HashSet<string> fired)
         {
-            // 1. Try the class name directly (e.g. "Slurper")
-            string? locationName = MonsterFilmingData.TryGetLocationByTypeName(rawName);
+            string? locationName = null;
 
-            // 2. Try stripping "ContentEvent" suffix (e.g. "SlurperContentEvent" → "Slurper")
+            // ── Priority 1: Direct ushort ID match ──────────────────────────────────
+            // Covers all hardcoded monster IDs from ContentEventIDMapper (1000–1045).
+            if (id != 0)
+                locationName = FilmingLocationData.TryGetLocationById(id);
+
+            // ── Priority 2: Artifact display-name match ──────────────────────────────
+            // Only populated when FireFilmingChecks detected an ArtifactContentEvent.
+            // e.g. PropContent.displayName "Ribcage" → "Filmed Ribcage"
+            if (locationName == null && !string.IsNullOrEmpty(artifactDisplayName))
+                locationName = FilmingLocationData.TryGetLocationByTypeName(artifactDisplayName);
+
+            // ── Priority 3: Runtime class-name match (legacy / catch-all) ────────────
+            if (locationName == null)
+                locationName = FilmingLocationData.TryGetLocationByTypeName(rawName);
+
+            // Strip trailing "ContentEvent" suffix and retry
+            // (handles "SlurperContentEvent" → "Slurper", etc.)
             if (locationName == null && rawName.EndsWith("ContentEvent", StringComparison.OrdinalIgnoreCase))
             {
                 string stripped = rawName.Substring(0, rawName.Length - "ContentEvent".Length);
-                locationName = MonsterFilmingData.TryGetLocationByTypeName(stripped);
+                locationName = FilmingLocationData.TryGetLocationByTypeName(stripped);
             }
-
-            // 3. Numeric ID fallback
-            if (locationName == null && typeId >= 0)
-                locationName = MonsterFilmingData.TryGetLocationById(typeId);
 
             if (locationName == null)
             {
                 Plugin.Logger.LogDebug(
-                    $"[ContentEvaluatorPatch] Unknown entity: class='{rawName}', ID={typeId}. " +
-                    $"Add to MonsterFilmingData if this is a monster/artifact.");
+                    $"[ContentEvaluatorPatch] No AP location for: class='{rawName}', ID={id}, " +
+                    $"artifactName='{artifactDisplayName ?? "n/a"}'. " +
+                    $"Add to FilmingLocationData if this is a new monster/artifact.");
                 return;
             }
 
