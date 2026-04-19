@@ -1,117 +1,132 @@
 // Patches/ItemPickupPatch.cs
 //
-// Hooks into the Content Warning item-pickup / shop-purchase pipeline to fire
-// Archipelago location checks.
+// Hooks into the Content Warning item-pickup / shop-purchase / filming pipeline
+// to fire Archipelago location checks.
 //
-// How item acquisition works in Content Warning (from Assembly-CSharp string scan):
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH 1 — ShopBuyPatch
+//   Target : ShopHandler.RPCA_SpawnDrone(byte[] itemIDs)   [private PunRPC]
 //
-//   SHOP PURCHASES
-//   ─────────────
-//   • ShopInteractableBuy  – MonoBehaviour on each "Buy" button in the shop.
-//     The player clicks it → RPCA_AddItemToCart is called → item goes into
-//     the ShoppingCart.  When the player confirms checkout, the actual item
-//     is granted and the cart is cleared.
-//   • We patch ShopInteractableBuy via AccessTools so the patch compiles even
-//     when the exact overload name isn't known at compile time.
+//   WHY THIS METHOD:
+//   The shop purchase flow is:
+//     ShopInteractibleOrder.Interact()
+//       → ShopHandler.OnOrderCartClicked()          [master client only]
+//         → ShopHandler.BuyItem(ShoppingCart cart)  [master only; checks IsEmpty]
+//           → private BuyItem(int cost, byte[], …)  [checks CanAfford]
+//             → RPCA_SpawnDrone(byte[] itemIDs)     ← we patch here
+//               (broadcast to ALL via RpcTarget.All ONLY when purchase succeeds)
 //
-//   PHYSICAL ITEM PICKUP (dungeon / surface)
-//   ────────────────────────────────────────
-//   • Pickup.RPC_RequestPickup – the networked RPC fired on the host
-//     when any player grabs a Pickup from the world.
-//   • We patch this to handle pickup-based location checks (e.g., picking up
-//     a specific piece of filming equipment triggers a location).
+//   RPCA_SpawnDrone is called exactly once per successful purchase, inside the
+//   `if (m_RoomStats.CanAfford(cost))` block.  Because it is broadcast with
+//   RpcTarget.All, all clients receive it; we guard with IsMasterClient so only
+//   the host sends the AP check (one check per purchase, not one per player).
 //
-//   VIDEO UPLOAD / EXTRACTION
-//   ─────────────────────────
-//   • ExtractVideoMachine.EvaluateRecording – called on the host when the
-//     footage upload machine finishes evaluating a recording.
-//   • We patch this postfix to fire the "Any Extraction" and day-based checks.
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH 2 — PickupPatch
+//   Target : Pickup.RPC_RequestPickup
+//   Purpose: Foundation for future physical-pickup location checks.
+//            Currently logs item name; no AP checks fire here yet.
 //
-// NOTE: All three patches are written with AccessTools string-based type and
-// method resolution so they gracefully no-op (log a warning) if the game
-// ever renames a method, rather than crashing on startup.
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH 3 — ContentEvaluatorPatch
+//   Target : ContentEvaluator.EvaluateRecording(CameraRecording, out ContentBuffer)
+//
+//   WHY THIS METHOD (from VideoDebugPage.cs reference):
+//     if (ContentEvaluator.EvaluateRecording(recording, out var buffer)) { … }
+//   This is the single evaluation entry point called by the ExtractVideoMachine's
+//   state machine when it finishes processing a disk.  It:
+//     • Returns true when a valid recording was evaluated.
+//     • Outputs a ContentBuffer whose frames describe every entity/event
+//       captured on camera (monsters, artifacts, etc.).
+//
+//   The patch fires in the postfix (after evaluation is complete):
+//     a) "Any Extraction"          — fires once per successful extraction
+//     b) "Extracted Footage on Day N" — fires for the current in-game day
+//     c) "Filmed <Monster/Artifact>"  — fires for each entity type found in
+//        the ContentBuffer, looked up in MonsterFilmingData.
+//
+//   The ExtractVideoMachine's concrete states are not needed; patching this
+//   single evaluator method covers all code paths that process footage.
+//
+// NOTE: All patches use AccessTools string-based type/method resolution so they
+// gracefully no-op (log a warning) if the game renames a method, rather than
+// crashing on startup.
+// ─────────────────────────────────────────────────────────────────────────────
 
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Reflection;
 using HarmonyLib;
 using ContentWarningArchipelago.Data;
+using Photon.Pun;
 using UnityEngine;
 
 namespace ContentWarningArchipelago.Patches
 {
-    // ======================================================================
-    // PATCH 1 — Shop item purchased
-    // Target: ShopInteractableBuy  (the MonoBehaviour on each shop "Buy" button)
-    // Method: Interact / Use / OnPointerClick — resolved at runtime via AccessTools.
-    //
-    // When triggered, we look at which ShopItem is associated with the interactable
-    // and fire the matching "Bought <ItemName>" location check.
-    // ======================================================================
-
+    // =========================================================================
+    // PATCH 1 — Shop item purchased (master-client side, after CanAfford check)
+    // =========================================================================
     [HarmonyPatch]
     public static class ShopBuyPatch
     {
-        // Tell Harmony which method to patch — resolved at runtime.
         static MethodBase? TargetMethod()
         {
-            // "ShopInteractableBuy" confirmed present in Assembly-CSharp string scan.
-            // The interactable system in CW uses an "Interact" convention.
-            // We also try "Use" as a fallback.
-            var type = AccessTools.TypeByName("ShopInteractableBuy");
+            var type = AccessTools.TypeByName("ShopHandler");
             if (type == null)
             {
-                Plugin.Logger.LogWarning("[ShopBuyPatch] Could not find type 'ShopInteractableBuy'. Patch skipped.");
+                Plugin.Logger.LogWarning("[ShopBuyPatch] Could not find type 'ShopHandler'. Patch skipped.");
                 return null;
             }
 
-            // Try known method names in priority order.
-            foreach (string candidate in new[] { "Interact", "Use", "Buy", "OnClick", "Perform" })
+            // RPCA_SpawnDrone(byte[] itemIDs) — private PunRPC called only when
+            // CanAfford succeeds on the master client.
+            var method = AccessTools.Method(type, "RPCA_SpawnDrone");
+            if (method != null)
             {
-                var m = AccessTools.Method(type, candidate);
-                if (m != null)
-                {
-                    Plugin.Logger.LogInfo($"[ShopBuyPatch] Patching {type.Name}.{m.Name}");
-                    return m;
-                }
+                Plugin.Logger.LogInfo($"[ShopBuyPatch] Patching {type.Name}.{method.Name}");
+                return method;
             }
 
-            Plugin.Logger.LogWarning("[ShopBuyPatch] No matching method found on ShopInteractableBuy. Patch skipped.");
+            Plugin.Logger.LogWarning("[ShopBuyPatch] Could not find 'RPCA_SpawnDrone' on ShopHandler. Patch skipped.");
             return null;
         }
 
         /// <summary>
-        /// Postfix fires after the shop buy method completes.
-        /// __instance is the ShopInteractableBuy MonoBehaviour; we read the
-        /// associated ShopItem / item name via reflection and send the check.
+        /// Postfix fires on EVERY client (RpcTarget.All broadcast).
+        /// We guard with IsMasterClient so only the host sends the AP check once.
+        /// <paramref name="itemIDs"/> is the exact set of purchased item IDs.
         /// </summary>
         [HarmonyPostfix]
-        static void Postfix(object __instance)
+        static void Postfix(object __instance, byte[] itemIDs)
         {
             if (!Plugin.connection.connected) return;
 
+            // Only the master client sends checks — prevents duplicate sends.
+            if (!PhotonNetwork.IsMasterClient) return;
+
             try
             {
-                // Try to get the item name from the ShopItem attached to this interactable.
-                // Field/property names discovered from the assembly string scan:
-                //   m_ShopHandler, CurrentSelectedShopItem, ShopItem, m_ItemNameText, etc.
-                string? itemName = TryGetShopItemName(__instance);
-                if (string.IsNullOrEmpty(itemName))
+                foreach (byte itemId in itemIDs)
                 {
-                    Plugin.Logger.LogWarning("[ShopBuyPatch] Could not resolve shop item name from interactable.");
-                    return;
-                }
+                    string? displayName = TryGetItemDisplayName(itemId);
+                    if (string.IsNullOrEmpty(displayName))
+                    {
+                        Plugin.Logger.LogDebug($"[ShopBuyPatch] Could not resolve display name for item ID {itemId}.");
+                        continue;
+                    }
 
-                string locationName = "Bought " + itemName;
-                long locId = LocationData.GetId(locationName);
-                if (locId < 0)
-                {
-                    // Item not in our location table — that's fine (non-AP items).
-                    Plugin.Logger.LogDebug($"[ShopBuyPatch] '{locationName}' not an AP location.");
-                    return;
-                }
+                    string locationName = "Bought " + displayName;
+                    long locId = LocationData.GetId(locationName);
+                    if (locId < 0)
+                    {
+                        Plugin.Logger.LogDebug($"[ShopBuyPatch] '{locationName}' is not an AP location (non-AP item).");
+                        continue;
+                    }
 
-                Plugin.Logger.LogInfo($"[ShopBuyPatch] Sending check for: {locationName}");
-                Plugin.SendCheck(locId);
+                    Plugin.Logger.LogInfo($"[ShopBuyPatch] Purchase confirmed → sending check: {locationName}");
+                    Plugin.SendCheck(locId);
+                }
             }
             catch (Exception ex)
             {
@@ -120,75 +135,50 @@ namespace ContentWarningArchipelago.Patches
         }
 
         /// <summary>
-        /// Attempts to extract the item display name from the ShopInteractableBuy instance
-        /// using a chain of reflection lookups for the most likely field/property names.
-        /// Returns null if nothing resolves.
+        /// Resolves the display name of a shop item from its byte ID using
+        /// <c>ItemDatabase.TryGetItemFromID</c> via reflection.
+        /// Returns null if the item could not be found.
         /// </summary>
-        private static string? TryGetShopItemName(object instance)
+        private static string? TryGetItemDisplayName(byte itemId)
         {
-            Type t = instance.GetType();
+            // ItemDatabase.TryGetItemFromID(byte id, out Item item) is a static method.
+            var dbType = AccessTools.TypeByName("ItemDatabase");
+            if (dbType == null) return null;
 
-            // Strategy 1: direct "shopItem" or "m_ShopItem" field → ShopItem component.
-            foreach (string fname in new[] { "shopItem", "m_ShopItem", "ShopItem", "item", "m_item" })
+            var tryGet = AccessTools.Method(dbType, "TryGetItemFromID");
+            if (tryGet == null) return null;
+
+            var args = new object[] { itemId, null! };
+            bool found = (bool)(tryGet.Invoke(null, args) ?? false);
+            if (!found || args[1] == null) return null;
+
+            object item = args[1];
+
+            // Prefer "displayName" field (matches location table naming).
+            var displayField = AccessTools.Field(item.GetType(), "displayName");
+            if (displayField != null)
             {
-                var field = AccessTools.Field(t, fname);
-                if (field != null)
-                {
-                    var shopItem = field.GetValue(instance);
-                    if (shopItem != null)
-                    {
-                        // ShopItem likely has a "name" field (Unity Object.name) or "itemName".
-                        var nameField = AccessTools.Field(shopItem.GetType(), "itemName")
-                                     ?? AccessTools.Field(shopItem.GetType(), "m_itemName");
-                        if (nameField != null)
-                            return nameField.GetValue(shopItem)?.ToString();
-
-                        // Fallback to Unity Object.name via cast.
-                        if (shopItem is UnityEngine.Object unityObj)
-                            return unityObj.name;
-                    }
-                }
+                string? display = displayField.GetValue(item)?.ToString();
+                if (!string.IsNullOrWhiteSpace(display)) return display;
             }
 
-            // Strategy 2: "m_ItemNameText" TMPro text field on the interactable itself.
-            foreach (string fname in new[] { "m_itemNameText", "m_ItemNameText", "itemNameText" })
-            {
-                var field = AccessTools.Field(t, fname);
-                if (field != null)
-                {
-                    var textComp = field.GetValue(instance);
-                    if (textComp != null)
-                    {
-                        var textProp = AccessTools.Property(textComp.GetType(), "text");
-                        if (textProp != null)
-                            return textProp.GetValue(textComp)?.ToString();
-                    }
-                }
-            }
+            // Fallback to Unity Object.name.
+            if (item is UnityEngine.Object unityObj && !string.IsNullOrWhiteSpace(unityObj.name))
+                return unityObj.name;
 
             return null;
         }
     }
 
-    // ======================================================================
+    // =========================================================================
     // PATCH 2 — Physical item picked up from the world
-    // Target: Pickup.RPC_RequestPickup
-    // Purpose: Detect when a player picks up a specific item (e.g. filming
-    //          equipment) and fire the matching location check.
-    //
-    // Current apworld locations that map to physical pickups:
-    //   • "Any Extraction" fires on footage upload, not item pickup.
-    //   • Filming locations fire when a recording is evaluated.
-    //   • This patch is a foundation for any future pickup-based locations
-    //     (e.g. picking up a specific prop could be a location check).
-    // ======================================================================
-
+    // Foundation for future pickup-based AP location checks.
+    // =========================================================================
     [HarmonyPatch]
     public static class PickupPatch
     {
         static MethodBase? TargetMethod()
         {
-            // "Pickup" and "RPC_RequestPickup" confirmed in reference scan.
             var type = AccessTools.TypeByName("Pickup");
             if (type == null)
             {
@@ -207,10 +197,6 @@ namespace ContentWarningArchipelago.Patches
             return method;
         }
 
-        /// <summary>
-        /// Postfix fires after a pickup has been successfully grabbed.
-        /// __instance is the Pickup MonoBehaviour.
-        /// </summary>
         [HarmonyPostfix]
         static void Postfix(object __instance)
         {
@@ -218,25 +204,9 @@ namespace ContentWarningArchipelago.Patches
 
             try
             {
-                // Resolve the picked-up item's name from the PickupHandler.
                 string? itemName = TryGetPickupName(__instance);
-                if (string.IsNullOrEmpty(itemName))
-                {
-                    Plugin.Logger.LogDebug("[PickupPatch] Could not resolve pickup name.");
-                    return;
-                }
-
-                Plugin.Logger.LogDebug($"[PickupPatch] Item picked up: {itemName}");
-
-                // ---- "Any Extraction" check -------------------------------------------------
-                // (Not directly a pickup — handled in the EvaluateRecording patch below.)
-
-                // ---- Future: map specific pickup names to AP location IDs -----------------
-                // Example: if itemName == "Reporter Mic" → "Filmed Reporter Mic" is an artifact
-                // location, but that fires when you *film* it, not pick it up.
-                //
-                // For now this patch logs the pickup. Extend as new AP locations are defined.
-                // ---------------------------------------------------------------------------
+                Plugin.Logger.LogDebug($"[PickupPatch] Item picked up: {itemName ?? "(unknown)"}");
+                // Future: map specific pickup names to AP location IDs here.
             }
             catch (Exception ex)
             {
@@ -248,7 +218,6 @@ namespace ContentWarningArchipelago.Patches
         {
             Type t = instance.GetType();
 
-            // Pickup.itemInstance -> ItemInstance.item -> Item.displayName
             var itemInstanceField = AccessTools.Field(t, "itemInstance");
             if (itemInstanceField != null)
             {
@@ -261,151 +230,323 @@ namespace ContentWarningArchipelago.Patches
                         var item = itemField.GetValue(itemInstance);
                         if (item != null)
                         {
-                            // Prefer displayName, fall back to Unity Object.name.
                             var displayNameField = AccessTools.Field(item.GetType(), "displayName");
                             if (displayNameField != null)
                             {
                                 var displayName = displayNameField.GetValue(item)?.ToString();
-                                if (!string.IsNullOrEmpty(displayName))
-                                    return displayName;
+                                if (!string.IsNullOrEmpty(displayName)) return displayName;
                             }
-                            if (item is UnityEngine.Object unityItem)
-                                return unityItem.name;
+                            if (item is UnityEngine.Object unityItem) return unityItem.name;
                         }
                     }
                 }
             }
 
-            // Fallback: use the Pickup GameObject name.
-            if (instance is Component comp)
-                return comp.gameObject.name;
-
+            if (instance is Component comp) return comp.gameObject.name;
             return null;
         }
     }
 
-    // ======================================================================
-    // PATCH 3 — Footage extracted / recording evaluated
-    // Target: ExtractVideoMachine (state machine that handles the upload terminal)
-    // Method: EvaluateRecording — confirmed in Assembly-CSharp string scan.
+    // =========================================================================
+    // PATCH 3 — ContentEvaluator.EvaluateRecording
     //
-    // Fires:
-    //   • "Any Extraction"                   (offset 0)
-    //   • "Extracted Footage on Day <N>"     (offsets 1–15)
-    // ======================================================================
-
+    // Handles both:
+    //   • Extraction location checks  ("Any Extraction", "Extracted Footage on Day N")
+    //   • Filming location checks     ("Filmed Slurper", "Filmed Zombe", etc.)
+    //
+    // Confirmed signature (VideoDebugPage.cs):
+    //   bool ContentEvaluator.EvaluateRecording(CameraRecording recording, out ContentBuffer buffer)
+    //
+    // Called by ExtractVideoMachine's state machine when the extraction terminal
+    // finishes processing a disk.
+    // =========================================================================
     [HarmonyPatch]
-    public static class ExtractVideoMachinePatch
+    public static class ContentEvaluatorPatch
     {
         static MethodBase? TargetMethod()
         {
-            // Try ExtractVideoMachine first, then UploadVideoStation as fallback.
-            foreach (string typeName in new[] { "ExtractVideoMachine", "UploadVideoStation" })
+            // Try ContentEvaluator first (confirmed in VideoDebugPage.cs reference).
+            foreach (string typeName in new[] { "ContentEvaluator" })
             {
                 var type = AccessTools.TypeByName(typeName);
                 if (type == null) continue;
 
-                // EvaluateRecording is confirmed in the string scan.
-                foreach (string methodName in new[] { "EvaluateRecording", "ExtractRecording", "ExtractVideo" })
+                var method = AccessTools.Method(type, "EvaluateRecording");
+                if (method != null)
                 {
-                    var m = AccessTools.Method(type, methodName);
-                    if (m != null)
-                    {
-                        Plugin.Logger.LogInfo($"[ExtractPatch] Patching {type.Name}.{m.Name}");
-                        return m;
-                    }
+                    Plugin.Logger.LogInfo($"[ContentEvaluatorPatch] Patching {type.Name}.{method.Name}");
+                    return method;
                 }
             }
 
-            Plugin.Logger.LogWarning("[ExtractPatch] Could not find extraction method. Patch skipped.");
+            Plugin.Logger.LogWarning(
+                "[ContentEvaluatorPatch] Could not find ContentEvaluator.EvaluateRecording. " +
+                "Extraction and filming checks will not fire. " +
+                "Verify the class name in Assembly-CSharp.");
             return null;
         }
 
         /// <summary>
-        /// Postfix fires after a recording has been evaluated/extracted.
-        /// We send:
-        ///   • "Any Extraction"
-        ///   • "Extracted Footage on Day N" for whatever the current day is.
+        /// Postfix fires after <c>ContentEvaluator.EvaluateRecording</c> returns.
+        /// <paramref name="__result"/> is <c>true</c> when evaluation succeeded.
+        /// <paramref name="buffer"/> is the out-parameter ContentBuffer containing
+        /// scored content frames.
         /// </summary>
         [HarmonyPostfix]
-        static void Postfix(object __instance)
+        static void Postfix(bool __result, object recording, ref object buffer)
         {
+            if (!__result) return;                    // evaluation failed / no content
             if (!Plugin.connection.connected) return;
 
             try
             {
-                // ---- Any Extraction --------------------------------------------------------
-                long anyExtractionId = LocationData.GetId(LocationNames.AnyExtraction);
-                if (anyExtractionId >= 0)
-                    Plugin.SendCheck(anyExtractionId);
+                // ---- a) Any Extraction -----------------------------------------------
+                long anyExtrId = LocationData.GetId(LocationNames.AnyExtraction);
+                if (anyExtrId >= 0)
+                {
+                    Plugin.Logger.LogInfo("[ContentEvaluatorPatch] Sending check: Any Extraction");
+                    Plugin.SendCheck(anyExtrId);
+                }
 
-                // ---- Day-based extraction --------------------------------------------------
-                // Try to read the current day number from a known field.
-                int day = TryGetCurrentDay(__instance);
+                // ---- b) Extracted Footage on Day N ------------------------------------
+                int day = TryGetCurrentDay();
                 if (day > 0 && day <= 15)
                 {
                     string dayLocName = LocationNames.ExtractedFootagePrefix + day;
                     long dayLocId = LocationData.GetId(dayLocName);
                     if (dayLocId >= 0)
                     {
-                        Plugin.Logger.LogInfo($"[ExtractPatch] Day {day} extraction → {dayLocName}");
+                        Plugin.Logger.LogInfo($"[ContentEvaluatorPatch] Day {day} extraction → sending check: {dayLocName}");
                         Plugin.SendCheck(dayLocId);
                     }
+                }
+
+                // ---- c) Filmed <Monster/Artifact> ------------------------------------
+                if (buffer != null)
+                {
+                    FireFilmingChecks(buffer);
                 }
             }
             catch (Exception ex)
             {
-                Plugin.Logger.LogError($"[ExtractPatch] Exception in postfix: {ex}");
+                Plugin.Logger.LogError($"[ContentEvaluatorPatch] Exception in postfix: {ex}");
+            }
+        }
+
+        // ------------------------------------------------------------------
+        // Filming detection
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Iterates the ContentBuffer's internal frames/events to find filmed
+        /// entities and fire the corresponding "Filmed X" AP location checks.
+        /// Uses reflection since ContentBuffer internals are not in the reference.
+        /// </summary>
+        private static void FireFilmingChecks(object buffer)
+        {
+            // Track which location names we've already fired this evaluation
+            // to avoid duplicate checks if the same entity appears in many frames.
+            var fired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Strategy: walk every field/property on the ContentBuffer looking
+            // for a collection of frames or events, then inspect each item.
+            Type bufferType = buffer.GetType();
+
+            foreach (FieldInfo field in bufferType.GetFields(
+                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                object? fieldValue = field.GetValue(buffer);
+                if (fieldValue == null) continue;
+
+                // If the field is a collection, iterate it.
+                if (fieldValue is IEnumerable enumerable && !(fieldValue is string))
+                {
+                    foreach (object? item in enumerable)
+                    {
+                        if (item == null) continue;
+                        TryFireFromContentItem(item, fired);
+                    }
+                }
+                else
+                {
+                    TryFireFromContentItem(fieldValue, fired);
+                }
             }
         }
 
         /// <summary>
-        /// Attempts to read the current in-game day from the extract machine or
-        /// a related game manager. Returns 0 if unresolvable.
+        /// Tries to extract an entity type identifier from a single content item
+        /// (ContentEventFrame, ContentEvent, or similar) and fire the AP check.
         /// </summary>
-        private static int TryGetCurrentDay(object instance)
+        private static void TryFireFromContentItem(object item, HashSet<string> fired)
         {
-            // Look for "day", "currentDay", "dayNumber" etc. on the instance.
-            Type t = instance.GetType();
-            foreach (string fname in new[] { "day", "currentDay", "dayNumber", "m_day", "m_currentDay" })
+            Type t = item.GetType();
+
+            // --- Strategy 1: look for an IEnumerable of child events ---------------
+            foreach (FieldInfo f in t.GetFields(
+                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
             {
-                var field = AccessTools.Field(t, fname);
-                if (field != null)
+                object? val = f.GetValue(item);
+                if (val is IEnumerable innerEnum && !(val is string))
                 {
-                    var val = field.GetValue(instance);
-                    if (val is int i) return i;
+                    foreach (object? child in innerEnum)
+                    {
+                        if (child != null)
+                            TryFireFromLeafEvent(child, fired);
+                    }
                 }
             }
 
-            // Fallback: look for a static GameManager / SurfaceNetworkHandler day field.
-            foreach (string typeName in new[] { "SurfaceNetworkHandler", "GameDirector", "GameManager" })
+            // --- Strategy 2: treat this item itself as a leaf event ----------------
+            TryFireFromLeafEvent(item, fired);
+        }
+
+        /// <summary>
+        /// Tries to extract a type identifier from a leaf content event object
+        /// and fire the corresponding "Filmed X" check.
+        /// Probes common field/property names for entity type information.
+        /// </summary>
+        private static void TryFireFromLeafEvent(object ev, HashSet<string> fired)
+        {
+            Type t = ev.GetType();
+
+            // ---- Try to get a string type name ----
+            string? typeName = null;
+
+            // Probe fields: "type", "contentType", "entityType", "creatureType",
+            //               "name", "entityName", "contentTypeName"
+            foreach (string candidate in new[]
+            {
+                "type", "contentType", "entityType", "creatureType",
+                "entityName", "contentTypeName", "typeName"
+            })
+            {
+                var field = AccessTools.Field(t, candidate);
+                if (field != null)
+                {
+                    object? raw = field.GetValue(ev);
+                    if (raw != null)
+                    {
+                        typeName = raw.ToString();
+                        break;
+                    }
+                }
+                var prop = AccessTools.Property(t, candidate);
+                if (prop != null)
+                {
+                    object? raw = prop.GetValue(ev);
+                    if (raw != null)
+                    {
+                        typeName = raw.ToString();
+                        break;
+                    }
+                }
+            }
+
+            // Also try to get a numeric ID
+            int typeId = -1;
+            foreach (string candidate in new[] { "id", "typeId", "entityId", "contentId", "creatureId" })
+            {
+                var field = AccessTools.Field(t, candidate);
+                if (field != null && field.GetValue(ev) is int rawId)
+                {
+                    typeId = rawId;
+                    break;
+                }
+                var prop = AccessTools.Property(t, candidate);
+                if (prop != null && prop.GetValue(ev) is int rawPropId)
+                {
+                    typeId = rawPropId;
+                    break;
+                }
+            }
+
+            // ---- Resolve to AP location name ----
+            string? locationName = null;
+
+            if (!string.IsNullOrEmpty(typeName))
+            {
+                locationName = MonsterFilmingData.TryGetLocationByTypeName(typeName!);
+                if (locationName == null)
+                {
+                    // Log for discovery — user can add to MonsterFilmingData.
+                    Plugin.Logger.LogDebug(
+                        $"[ContentEvaluatorPatch] Unrecognised entity type string: '{typeName}' " +
+                        $"(class: {t.Name}). Add to MonsterFilmingData if this is a monster/artifact.");
+                }
+            }
+
+            if (locationName == null && typeId >= 0)
+            {
+                locationName = MonsterFilmingData.TryGetLocationById(typeId);
+                if (locationName == null)
+                {
+                    Plugin.Logger.LogDebug(
+                        $"[ContentEvaluatorPatch] Unrecognised entity type ID: {typeId} " +
+                        $"(class: {t.Name}). Add to MonsterFilmingData.EntityIdToLocation.");
+                }
+            }
+
+            if (string.IsNullOrEmpty(locationName)) return;
+
+            // ---- Fire the check (once per location per evaluation) ----
+            if (fired.Contains(locationName)) return;
+            fired.Add(locationName);
+
+            long locId = LocationData.GetId(locationName);
+            if (locId < 0)
+            {
+                Plugin.Logger.LogDebug($"[ContentEvaluatorPatch] '{locationName}' not in AP location table.");
+                return;
+            }
+
+            Plugin.Logger.LogInfo($"[ContentEvaluatorPatch] Filming check → {locationName}");
+            Plugin.SendCheck(locId);
+        }
+
+        // ------------------------------------------------------------------
+        // Day resolution
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Reads the current in-game day number from SurfaceNetworkHandler
+        /// or any other known game manager.  Returns 0 if unresolvable.
+        /// </summary>
+        private static int TryGetCurrentDay()
+        {
+            // Try static fields / singleton instances on known manager types.
+            foreach (string typeName in new[]
+            {
+                "SurfaceNetworkHandler", "GameDirector", "GameManager"
+            })
             {
                 var mgr = AccessTools.TypeByName(typeName);
                 if (mgr == null) continue;
 
-                foreach (string fname in new[] { "day", "currentDay", "dayNumber" })
+                foreach (string fname in new[] { "day", "currentDay", "dayNumber", "m_day", "m_currentDay" })
                 {
-                    // Static field first.
+                    // Direct static field.
                     var sf = AccessTools.Field(mgr, fname);
-                    if (sf != null && sf.IsStatic)
+                    if (sf?.IsStatic == true)
                     {
                         var val = sf.GetValue(null);
-                        if (val is int i) return i;
+                        if (val is int i && i > 0) return i;
                     }
 
-                    // Instance singleton: look for a static "instance" field.
-                    var instField = AccessTools.Field(mgr, "instance");
-                    if (instField?.IsStatic == true)
+                    // Instance via static "instance" / "Instance" field.
+                    foreach (string instName in new[] { "instance", "Instance" })
                     {
+                        var instField = AccessTools.Field(mgr, instName);
+                        if (instField?.IsStatic != true) continue;
+
                         var singleton = instField.GetValue(null);
-                        if (singleton != null)
+                        if (singleton == null) continue;
+
+                        var dayField = AccessTools.Field(singleton.GetType(), fname);
+                        if (dayField != null)
                         {
-                            var dayField = AccessTools.Field(mgr, fname);
-                            if (dayField != null)
-                            {
-                                var val = dayField.GetValue(singleton);
-                                if (val is int i) return i;
-                            }
+                            var val = dayField.GetValue(singleton);
+                            if (val is int i2 && i2 > 0) return i2;
                         }
                     }
                 }
