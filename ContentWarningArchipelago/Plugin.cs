@@ -5,7 +5,6 @@ using BepInEx;
 using BepInEx.Logging;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
-using ContentWarningArchipelago.Patches;
 using HarmonyLib;
 using ContentWarningArchipelago.UI;
 
@@ -52,12 +51,10 @@ namespace ContentWarningArchipelago
             LocationData.Init();
 
             // Apply all Harmony patches declared in this assembly.
+            // MainMenuAPPatch uses [HarmonyPatch(typeof(MainMenuHandler), "Start")] so
+            // PatchAll() picks it up automatically — no manual registration needed.
             var harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             harmony.PatchAll();
-
-            // ModManagerUI lives in a separate assembly — patch it manually at runtime
-            // so we don't need a compile-time reference to that assembly.
-            ModManagerAPPatch.TryApplyPatch(harmony);
 
             Logger.LogInfo("[CWArch] Harmony patches applied.");
         }
