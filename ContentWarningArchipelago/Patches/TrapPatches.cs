@@ -1,34 +1,27 @@
 // Patches/TrapPatches.cs
 // Implements the two AP trap items:
 //
-//   • Ragdoll Trap  — ragdolls ALL players in the lobby for ~5 s.
-//   • Monster Spawn — spawns a monster near ONE random player in the lobby.
+//   • Ragdoll Trap  — ragdolls the local player for 5 s.
+//   • Monster Spawn — spawns a random monster near the local player's position.
 //
-// NETWORKING MODEL (Virality-informed)
-// Virality uses SurfaceNetworkHandler.Instance.m_View.RPC(..., RpcTarget.All, ...)
-// to broadcast effects to every client.  We apply the same pattern:
-//   • RagdollTrap:    master sends RPC to RpcTarget.All  → each client ragdolls its local player.
-//   • MonsterSpawn:   master picks a random live player, sends targeted RPC to them
-//                     → that client's machine handles the spawn (avoids authority issues).
+// NETWORKING MODEL
+// Ragdoll Trap:
+//   Directly calls PlayerRagdoll.Fall(duration) on Player.localPlayer.
+//   Fall() sets player.data.fallTime; UpdateValues_Fixed() decrements it
+//   automatically each FixedUpdate — no un-ragdoll coroutine is needed.
+//   No master-client restriction: each AP client applies the effect to
+//   their own local player the moment the item is received.
 //
-// If the local client is NOT the master when a trap arrives, we queue a request
-// that is sent once we confirm master-client status, or we send via the
-// existing SurfaceNetworkHandler view so the RPC is routed correctly.
-//
-// REFLECTION STRATEGY
-// Ragdoll and monster-spawn APIs are accessed via AccessTools so the patch
-// compiles and loads even if method signatures change in a game update —
-// it will log a warning and skip rather than crashing.
-
-// Unity's AddComponent<T>() return type is annotated as T? in the publicized NuGet
-// stubs even though it always succeeds for MonoBehaviours — suppress the resulting
-// nullable-conversion warnings that are expected in Unity projects.
-#pragma warning disable CS8600
+// Monster Spawn Trap:
+//   Calls MonsterSpawner.SpawnMonster(prefabName, position) which internally
+//   calls HelperFunctions.GetGroundPos + PhotonNetwork.Instantiate.
+//   PhotonNetwork.Instantiate may be called from any connected client;
+//   the spawned object's Bot component self-registers with BotHandler.instance
+//   in Bot.Start(), so BotHandler tracks it automatically.
+//   Position = Player.localPlayer.Center() + random horizontal offset.
 
 using System;
-using System.Collections;
 using ContentWarningArchipelago.Core;
-using HarmonyLib;
 using Photon.Pun;
 using UnityEngine;
 
@@ -36,226 +29,111 @@ namespace ContentWarningArchipelago.Patches
 {
     /// <summary>
     /// Static helper called from <c>ItemData.HandleReceivedItem</c> for trap items.
-    /// All network dispatching is handled here; callers just invoke the public methods.
     /// </summary>
     public static class TrapHandler
     {
+        // ── Monster prefab names ─────────────────────────────────────────────
+        // These must match the Unity resource / Photon resource folder names
+        // exactly (case-sensitive). Names taken from item_notes.md.
+        // "Spawn 3 Zombe" is represented as a higher-weight "Zombe" entry;
+        // triple-spawning can be added as a future enhancement.
+        private static readonly string[] MonsterPrefabNames =
+        {
+            "Arms",
+            "Bomber",
+            "Zombe",        // item_notes.md spells it "Zombe", not "Zombie"
+            "Zombe",        // "Spawn 3 Zombe" — weighted double entry for now
+            "Whisk",
+            "Eye Guy",
+            "Knifo",
+            "Button Robot",
+            "Mouthe",
+            "Puffo",
+        };
+
+        // Radius (Unity units) of the random horizontal spawn offset from the player.
+        private const float SpawnOffsetRadius = 5f;
+
         // ================================================================== Ragdoll Trap
 
         /// <summary>
-        /// Ragdolls ALL players for <paramref name="duration"/> seconds.
-        /// Only the master client should call this (it broadcasts to everyone).
-        /// If the local client is not master the call is silently dropped — the
-        /// master's own ItemData handler will have received the same trap item.
+        /// Ragdolls the local player for <paramref name="duration"/> seconds by calling
+        /// <c>PlayerRagdoll.Fall</c> directly on <c>Player.localPlayer</c>.
+        /// Works on any client — no master-client restriction required.
         /// </summary>
         public static void ApplyRagdollTrap(float duration = 5f)
         {
-            if (!PhotonNetwork.IsMasterClient)
-            {
-                Plugin.Logger.LogDebug("[TrapHandler] RagdollTrap: not master — skipping (master will handle).");
-                return;
-            }
-
-            Plugin.Logger.LogInfo("[TrapHandler] Sending RagdollTrap RPC to all players.");
-
-            try
-            {
-                // Send RPC via SurfaceNetworkHandler's existing view — same vehicle Virality uses.
-                SurfaceNetworkHandler.Instance.m_View.RPC(
-                    "RPCA_RagdollTrap",
-                    RpcTarget.All,
-                    duration);
-            }
-            catch (Exception ex)
-            {
-                Plugin.Logger.LogWarning($"[TrapHandler] RPCA_RagdollTrap RPC failed: {ex.Message}");
-                // Fall back: apply locally at least.
-                ApplyRagdollLocal(duration);
-            }
-        }
-
-        /// <summary>
-        /// Called on each client's machine by the RPCA_RagdollTrap RPC (or as
-        /// a local fallback).  Applies ragdoll physics to the local player.
-        /// </summary>
-        internal static void ApplyRagdollLocal(float duration)
-        {
             var local = Player.localPlayer;
-            if ((object)local == null) return;
-
-            // Look for a known ragdoll / physics-state method on Player or Player.PlayerData.
-            bool applied = false;
-
-            // Strategy 1: Player.Ragdoll() — common CW method name.
-            foreach (string mname in new[] { "Ragdoll", "ApplyRagdoll", "SetRagdoll", "ForceRagdoll" })
+            if ((object)local == null)
             {
-                var m = AccessTools.Method(typeof(Player), mname);
-                if (m == null) m = AccessTools.Method(typeof(Player.PlayerData), mname);
-                if (m != null)
-                {
-                    try
-                    {
-                        m.Invoke(local, null);
-                        applied = true;
-                        Plugin.Logger.LogInfo($"[TrapHandler] Applied ragdoll via {m.Name}.");
-                        break;
-                    }
-                    catch { /* try next */ }
-                }
-            }
-
-            if (!applied)
-            {
-                Plugin.Logger.LogWarning("[TrapHandler] Could not find ragdoll method — trap had no effect.");
+                Plugin.Logger.LogWarning("[TrapHandler] RagdollTrap: Player.localPlayer is null — not in-game yet?");
                 return;
             }
 
-            // Schedule un-ragdoll after duration.
-            // We need a MonoBehaviour to run a coroutine; piggyback on the plugin instance.
-            if ((object)Plugin.connection != null)
-                CoroutineRunner.Run(UnragdollAfter(local, duration));
-        }
-
-        private static IEnumerator UnragdollAfter(Player player, float delay)
-        {
-            yield return new WaitForSeconds(delay);
-
-            if ((object)player == null) yield break;
-
-            foreach (string mname in new[] { "UnRagdoll", "StopRagdoll", "Revive", "Stand" })
+            if ((object)local.refs?.ragdoll == null)
             {
-                var m = AccessTools.Method(typeof(Player), mname);
-                if (m == null) m = AccessTools.Method(typeof(Player.PlayerData), mname);
-                if (m != null)
-                {
-                    try { m.Invoke(player, null); } catch { }
-                    break;
-                }
+                Plugin.Logger.LogWarning("[TrapHandler] RagdollTrap: ragdoll reference is null.");
+                return;
             }
+
+            // Fall(duration) sets player.data.fallTime = duration (if greater than
+            // the current value), making player.Ragdoll() return true.
+            // PlayerData.UpdateValues_Fixed() decrements fallTime every FixedUpdate
+            // so the effect expires automatically — no cleanup coroutine needed.
+            local.refs.ragdoll.Fall(duration);
+            Plugin.Logger.LogInfo($"[TrapHandler] RagdollTrap: applied Fall({duration}s) to local player.");
         }
 
         // ================================================================== Monster Spawn Trap
 
         /// <summary>
-        /// Spawns a monster near ONE random alive player in the lobby.
-        /// Only the master client should call this; it picks a random target
-        /// and sends a targeted RPC (Virality pattern: player.refs.view.Controller).
+        /// Spawns a random monster near the local player's current position.
+        /// Uses <c>MonsterSpawner.SpawnMonster</c> which handles ground-snapping
+        /// via <c>HelperFunctions.GetGroundPos</c> and <c>PhotonNetwork.Instantiate</c>.
+        /// The spawned monster's <c>Bot</c> component self-registers with
+        /// <c>BotHandler.instance</c> in <c>Bot.Start()</c>.
         /// </summary>
         public static void ApplyMonsterSpawnTrap()
         {
-            if (!PhotonNetwork.IsMasterClient)
+            if (!PhotonNetwork.IsConnected)
             {
-                Plugin.Logger.LogDebug("[TrapHandler] MonsterSpawn: not master — skipping.");
+                Plugin.Logger.LogWarning("[TrapHandler] MonsterSpawn: not connected to Photon room — cannot spawn.");
                 return;
             }
 
-            var handler = PlayerHandler.instance;
-            if ((object)handler == null || handler.playersAlive == null || handler.playersAlive.Count == 0)
+            var local = Player.localPlayer;
+            if ((object)local == null)
             {
-                Plugin.Logger.LogWarning("[TrapHandler] MonsterSpawn: no alive players found.");
+                Plugin.Logger.LogWarning("[TrapHandler] MonsterSpawn: Player.localPlayer is null — not in-game yet?");
                 return;
             }
 
-            // Pick a random alive player (Virality picks from playersAlive array).
-            int idx    = UnityEngine.Random.Range(0, handler.playersAlive.Count);
-            var target = handler.playersAlive.ToArray()[idx];
+            // Pick a random monster from the weighted list.
+            int idx = UnityEngine.Random.Range(0, MonsterPrefabNames.Length);
+            string chosenMonster = MonsterPrefabNames[idx];
+
+            // Random horizontal offset; Y zeroed — MonsterSpawner snaps to ground internally.
+            Vector2 circle = UnityEngine.Random.insideUnitCircle * SpawnOffsetRadius;
+            Vector3 spawnPos = local.Center() + new Vector3(circle.x, 0f, circle.y);
 
             Plugin.Logger.LogInfo(
-                $"[TrapHandler] MonsterSpawn targeting player: {target.refs.view.Controller.NickName}");
+                $"[TrapHandler] MonsterSpawn: spawning '{chosenMonster}' " +
+                $"near {local.refs.view.Controller.NickName} at {spawnPos}.");
 
             try
             {
-                // Targeted RPC to the chosen player's view controller.
-                // That client will spawn the monster near their own position.
-                SurfaceNetworkHandler.Instance.m_View.RPC(
-                    "RPCA_MonsterSpawnTrap",
-                    target.refs.view.Controller);
+                // MonsterSpawner.SpawnMonster(string monster, Vector3 position) calls
+                //   HelperFunctions.GetGroundPos(position + Vector3.up, ...)
+                //   PhotonNetwork.Instantiate(monster, groundPos, identity, 0)
+                // Any connected Photon client may call PhotonNetwork.Instantiate.
+                // The spawned GameObject's Bot.Start() adds itself to BotHandler.instance.bots.
+                MonsterSpawner.SpawnMonster(chosenMonster, spawnPos);
             }
             catch (Exception ex)
             {
-                Plugin.Logger.LogWarning($"[TrapHandler] RPCA_MonsterSpawnTrap RPC failed: {ex.Message}");
-                // Fall back: spawn near local player at least.
-                SpawnMonsterLocal(Player.localPlayer);
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn failed for '{chosenMonster}': {ex.Message}");
             }
         }
-
-        /// <summary>
-        /// Called on the targeted client's machine to spawn a monster near them.
-        /// Uses reflection to find a suitable enemy-director spawn method.
-        /// </summary>
-        internal static void SpawnMonsterLocal(Player targetPlayer)
-        {
-            if ((object)targetPlayer == null) return;
-
-            Vector3 spawnPos = targetPlayer.transform.position + targetPlayer.transform.forward * 3f;
-
-            // Look for an EnemyDirector or monster spawner singleton.
-            foreach (string typeName in new[] { "EnemyDirector", "MonsterDirector", "EnemySpawner" })
-            {
-                var t = AccessTools.TypeByName(typeName);
-                if (t == null) continue;
-
-                // Try to get singleton instance.
-                object? instance = null;
-                var instanceField = AccessTools.Field(t, "instance")
-                                 ?? AccessTools.Field(t, "Instance");
-                if (instanceField != null) instance = instanceField.GetValue(null);
-
-                if (instance == null) continue;
-
-                // Try to call a spawn method.
-                foreach (string mname in new[] { "SpawnEnemy", "SpawnRandom", "ForceSpawn", "Spawn" })
-                {
-                    var m = AccessTools.Method(t, mname);
-                    if (m == null) continue;
-
-                    try
-                    {
-                        // Try with position parameter, then without.
-                        var parms = m.GetParameters();
-                        if (parms.Length == 1 && parms[0].ParameterType == typeof(Vector3))
-                            m.Invoke(instance, new object[] { spawnPos });
-                        else if (parms.Length == 0)
-                            m.Invoke(instance, null);
-                        else
-                            continue;
-
-                        Plugin.Logger.LogInfo($"[TrapHandler] Spawned monster via {typeName}.{mname}.");
-                        return;
-                    }
-                    catch (Exception ex)
-                    {
-                        Plugin.Logger.LogDebug($"[TrapHandler] {typeName}.{mname} failed: {ex.Message}");
-                    }
-                }
-            }
-
-            Plugin.Logger.LogWarning("[TrapHandler] MonsterSpawn: could not find a spawn method — no monster spawned.");
-        }
-    }
-
-    // =========================================================================
-    // Minimal coroutine runner — needed so TrapHandler (a static class) can
-    // schedule the un-ragdoll coroutine without a direct MonoBehaviour reference.
-    // =========================================================================
-
-    internal static class CoroutineRunner
-    {
-        private static CoroutineBridge? _bridge;
-
-    internal static void Run(IEnumerator routine)
-        {
-            if ((object)_bridge == null || !_bridge.gameObject.activeInHierarchy)
-            {
-                var go = new GameObject("AP_CoroutineRunner");
-                UnityEngine.Object.DontDestroyOnLoad(go);
-                // AddComponent always returns an instance here; the null-forgiving
-                // operator suppresses CS8600 under <Nullable>enable</Nullable>.
-                _bridge = go.AddComponent<CoroutineBridge>()!;
-            }
-            _bridge!.StartCoroutine(routine);
-        }
-
-        internal class CoroutineBridge : MonoBehaviour { }
     }
 }
