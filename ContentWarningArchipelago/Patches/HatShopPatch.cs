@@ -123,10 +123,13 @@ namespace ContentWarningArchipelago.Patches
                 }
                 else
                 {
-                    // RoomStats not ready (shouldn't happen for StockShop, but be safe).
-                    seed = DateTime.Today.Date.GetHashCode();
+                    // RoomStats not ready yet — suppress this early call entirely.
+                    // SurfaceReadyHatStockPatch will re-trigger StockShop() once
+                    // SurfaceNetworkHandler.InitSurface() has finished and RoomStats is confirmed non-null.
                     Plugin.Logger.LogWarning(
-                        "[HatShopStockPatch] RoomStats not ready — falling back to DateTime seed.");
+                        "[HatShopStockPatch] RoomStats not ready — suppressing early call. " +
+                        "Deferred to SurfaceReadyHatStockPatch.");
+                    return false; // skip original (do NOT send a DateTime-seeded RPC)
                 }
 
                 // Get the private PhotonView field `view` via reflection.
@@ -152,6 +155,110 @@ namespace ContentWarningArchipelago.Patches
                 Plugin.Logger.LogError($"[HatShopStockPatch] Exception in Prefix: {ex}. Allowing original.");
                 return true;
             }
+        }
+    }
+
+    // =========================================================================
+    // PATCH 1b — Re-stock hat shop once RoomStats is confirmed ready
+    //
+    // Postfix on SurfaceNetworkHandler.InitSurface (private void).
+    //
+    // Problem: HatShop.Start() calls StockShop() during Unity's Start phase,
+    // which may fire BEFORE SurfaceNetworkHandler.InitSurface() has run and
+    // created RoomStats.  HatShopStockPatch.Prefix now suppresses that early
+    // call instead of falling back to the DateTime seed, but this means the
+    // shop stays empty until something re-triggers stocking with a valid seed.
+    //
+    // Solution: after InitSurface() completes (guaranteeing RoomStats != null),
+    // this postfix invokes HatShop.StockShop() via reflection.
+    // HatShopStockPatch.Prefix will intercept that call and use
+    // RoomStats.CurrentDay as the seed — the correct, deterministic in-game seed.
+    //
+    // If HatShop.Start() happened to run AFTER InitSurface (i.e., no early-call
+    // problem existed this session), the shop will simply be re-stocked with the
+    // same seed and the same result — harmless.
+    // =========================================================================
+    [HarmonyPatch]
+    internal static class SurfaceReadyHatStockPatch
+    {
+        static MethodBase? TargetMethod()
+        {
+            var type = AccessTools.TypeByName("SurfaceNetworkHandler");
+            if (type == null)
+            {
+                Plugin.Logger.LogWarning("[SurfaceReadyHatStockPatch] Could not find 'SurfaceNetworkHandler'. Patch skipped.");
+                return null;
+            }
+
+            // InitSurface is private void — still patchable by name.
+            var method = AccessTools.Method(type, "InitSurface");
+            if (method == null)
+            {
+                Plugin.Logger.LogWarning("[SurfaceReadyHatStockPatch] Could not find 'InitSurface' on SurfaceNetworkHandler. Patch skipped.");
+                return null;
+            }
+
+            Plugin.Logger.LogInfo("[SurfaceReadyHatStockPatch] Patching SurfaceNetworkHandler.InitSurface (Postfix)");
+            return method;
+        }
+
+        /// <summary>
+        /// Postfix: once InitSurface() has run, RoomStats is guaranteed non-null.
+        /// Re-trigger HatShop.StockShop() so the hat shop is always seeded with
+        /// RoomStats.CurrentDay rather than a real-world DateTime.
+        /// Only the master client calls StockShop (which broadcasts the RPC to all).
+        /// </summary>
+        [HarmonyPostfix]
+        private static void Postfix()
+        {
+            if (!Plugin.connection.connected) return;
+            if (!PhotonNetwork.IsMasterClient) return;
+
+            // RoomStats should be set by now, but guard defensively.
+            if (SurfaceNetworkHandler.RoomStats == null)
+            {
+                Plugin.Logger.LogWarning("[SurfaceReadyHatStockPatch] RoomStats still null after InitSurface — skipping deferred restock.");
+                return;
+            }
+
+            // Locate the static HatShop.instance field.
+            var hatShopType = AccessTools.TypeByName("HatShop");
+            if (hatShopType == null)
+            {
+                Plugin.Logger.LogWarning("[SurfaceReadyHatStockPatch] Could not find type 'HatShop'.");
+                return;
+            }
+
+            var instanceField = AccessTools.Field(hatShopType, "instance");
+            if (instanceField == null)
+            {
+                Plugin.Logger.LogWarning("[SurfaceReadyHatStockPatch] Could not find static 'instance' field on HatShop.");
+                return;
+            }
+
+            var hatShopInstance = instanceField.GetValue(null);
+            if (hatShopInstance == null)
+            {
+                // HatShop hasn't run Awake yet — the normal Start() call will handle stocking
+                // and by that point RoomStats will be valid (InitSurface already ran).
+                Plugin.Logger.LogDebug("[SurfaceReadyHatStockPatch] HatShop.instance is null — deferring to HatShop.Start().");
+                return;
+            }
+
+            // Invoke the private StockShop() method.  HatShopStockPatch.Prefix will
+            // intercept this and seed the shop with RoomStats.CurrentDay.
+            var stockShopMethod = AccessTools.Method(hatShopType, "StockShop");
+            if (stockShopMethod == null)
+            {
+                Plugin.Logger.LogWarning("[SurfaceReadyHatStockPatch] Could not find 'StockShop' on HatShop.");
+                return;
+            }
+
+            Plugin.Logger.LogInfo(
+                $"[SurfaceReadyHatStockPatch] RoomStats ready (Day={SurfaceNetworkHandler.RoomStats.CurrentDay}). " +
+                $"Triggering HatShop.StockShop() with in-game day seed.");
+
+            stockShopMethod.Invoke(hatShopInstance, null);
         }
     }
 
