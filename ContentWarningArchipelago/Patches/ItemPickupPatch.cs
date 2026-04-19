@@ -465,34 +465,100 @@ namespace ContentWarningArchipelago.Patches
                     eventName = getNameMethod.Invoke(contentEvent, null)?.ToString() ?? string.Empty;
                 }
 
-                // Debug scan line — logs every GetName() and GetID() in the buffer
-                // so that artifacts like Skulls can be confirmed as correctly identified.
-                Plugin.Logger.LogDebug(
-                    $"[ContentEvaluatorPatch] Buffer scan — class='{eventType.Name}', " +
+                // Buffer scan — log GetType().Name for every event so we can see exactly
+                // which event types are present in the recording.
+                string rawName = eventType.Name;
+                Plugin.Logger.LogInfo(
+                    $"[ContentEvaluatorPatch] Buffer scan — type='{rawName}', " +
                     $"GetName()='{eventName}', GetID()={eventId}");
 
+                // For artifact- or prop-related events, dump every field at every
+                // inheritance level so we can pinpoint where 'Skull' / 'Ribcage' etc.
+                // is actually stored at runtime.
+                bool isArtifactOrProp =
+                    rawName.IndexOf("artifact", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    rawName.IndexOf("prop",     StringComparison.OrdinalIgnoreCase) >= 0;
+
+                if (isArtifactOrProp)
+                {
+                    Plugin.Logger.LogInfo(
+                        "[ContentEvaluatorPatch] >> Artifact/prop event — dumping all fields:");
+                    for (Type t = eventType; t != null && t != typeof(object); t = t.BaseType)
+                    {
+                        foreach (var fi in t.GetFields(
+                            BindingFlags.Instance  |
+                            BindingFlags.Public    |
+                            BindingFlags.NonPublic |
+                            BindingFlags.DeclaredOnly))
+                        {
+                            try
+                            {
+                                object? fieldVal = fi.GetValue(contentEvent);
+                                string valStr = fieldVal is UnityEngine.Object uo2
+                                    ? $"UnityObject(name='{uo2.name}', type='{uo2.GetType().Name}')"
+                                    : (fieldVal?.ToString() ?? "null");
+                                Plugin.Logger.LogInfo(
+                                    $"[ContentEvaluatorPatch]   [{t.Name}].{fi.Name} = {valStr}");
+                            }
+                            catch (Exception fex)
+                            {
+                                Plugin.Logger.LogInfo(
+                                    $"[ContentEvaluatorPatch]   [{t.Name}].{fi.Name} = <error: {fex.Message}>");
+                            }
+                        }
+                    }
+                }
+
                 // --- Detect ArtifactContentEvent: extract PropContent asset name ---
-                // ArtifactContentEvent is created by ContentEventIDMapper when a PropContent
-                // has isArtifact == true.  The class name is always "ArtifactContentEvent"
-                // regardless of which artifact it is, so we read the nested 'content' field
-                // to find the artifact's identity via (contentEvent as ArtifactContentEvent).content.name
-                // (UnityEngine.Object.name — the ScriptableObject asset name).
+                // Game reference (ContentEventIDMapper.cs) confirms the field is named
+                // 'content' (type PropContent) — same as PropContentEvent.  We try
+                // 'content' first, then 'item' and 'artifact' as runtime fallbacks, and
+                // log exactly which name resolves so any rename is immediately visible.
                 string? artifactDisplayName = null;
-                string rawName = eventType.Name;
 
                 if (rawName.Equals("ArtifactContentEvent", StringComparison.Ordinal))
                 {
-                    var contentField = AccessTools.Field(eventType, "content");
+                    FieldInfo? contentField = null;
+                    string? resolvedFieldName = null;
+                    foreach (string candidateName in new[] { "content", "item", "artifact" })
+                    {
+                        contentField = AccessTools.Field(eventType, candidateName);
+                        if (contentField != null)
+                        {
+                            resolvedFieldName = candidateName;
+                            break;
+                        }
+                    }
+
                     if (contentField != null)
                     {
+                        Plugin.Logger.LogInfo(
+                            $"[ContentEvaluatorPatch] ArtifactContentEvent: resolved field name = '{resolvedFieldName}'");
                         var propContent = contentField.GetValue(contentEvent);
                         if (propContent is UnityEngine.Object uo)
                         {
                             artifactDisplayName = uo.name;
-                            Plugin.Logger.LogDebug(
-                                $"[ContentEvaluatorPatch] ArtifactContentEvent detected: " +
+                            Plugin.Logger.LogInfo(
+                                $"[ContentEvaluatorPatch] ArtifactContentEvent: " +
                                 $"assetName='{artifactDisplayName}', ID={eventId}");
                         }
+                        else
+                        {
+                            Plugin.Logger.LogInfo(
+                                $"[ContentEvaluatorPatch] ArtifactContentEvent: " +
+                                $"field '{resolvedFieldName}' value is not UnityEngine.Object " +
+                                $"(actual type: '{propContent?.GetType().Name ?? "null"}')");
+                        }
+                    }
+                    else
+                    {
+                        // None of the candidate names matched — log available fields for diagnosis.
+                        var allFields = eventType.GetFields(
+                            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                        string fieldList = string.Join(", ", Array.ConvertAll(allFields, f => f.Name));
+                        Plugin.Logger.LogWarning(
+                            $"[ContentEvaluatorPatch] ArtifactContentEvent: could not find " +
+                            $"'content'/'item'/'artifact' field. Available fields: [{fieldList}]");
                     }
                 }
 
