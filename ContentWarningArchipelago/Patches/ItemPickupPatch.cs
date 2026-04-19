@@ -53,12 +53,13 @@
 //      it is null before the method body runs.  Only a Postfix can access the
 //      populated ContentBuffer.  FilmingPostfix is therefore a [HarmonyPostfix].
 //
-//   Field chain confirmed from ContentBuffer.cs game reference:
-//     ContentBuffer.buffer           — List<BufferedContent>  (public field)
-//     BufferedContent.frame          — ContentEventFrame      (public field)
-//     ContentEventFrame.contentEvent — ContentEvent subclass  (public field)
-//     ArtifactContentEvent.content   — PropContent            (public field)
-//     PropContent is a ScriptableObject; use Object.name for the asset name.
+ //   Field chain confirmed from ContentBuffer.cs game reference:
+ //     ContentBuffer.buffer           — List<BufferedContent>  (public field)
+ //     BufferedContent.frame          — ContentEventFrame      (public field)
+ //     ContentEventFrame.contentEvent — ContentEvent subclass  (public field)
+ //     ArtifactContentEvent.artifact  — PropContent            (primary field; gives specific name e.g. 'Ribcage')
+ //     ArtifactContentEvent.content   — PropContent            (fallback; gives generic name e.g. 'Bones')
+ //     PropContent is a ScriptableObject; use Object.name for the asset name.
 //
 // NOTE: All patches use AccessTools string-based type/method resolution so they
 // gracefully no-op (log a warning) if the game renames a method, rather than
@@ -510,17 +511,17 @@ namespace ContentWarningArchipelago.Patches
                 }
 
                 // --- Detect ArtifactContentEvent: extract PropContent asset name ---
-                // Game reference (ContentEventIDMapper.cs) confirms the field is named
-                // 'content' (type PropContent) — same as PropContentEvent.  We try
-                // 'content' first, then 'item' and 'artifact' as runtime fallbacks, and
-                // log exactly which name resolves so any rename is immediately visible.
+                // Logs confirm ArtifactContentEvent has TWO relevant fields:
+                //   • artifact — specific asset name (e.g. 'Ribcage')  ← preferred
+                //   • content  — generic category name (e.g. 'Bones')  ← fallback
+                // Search order: artifact → content → item
                 string? artifactDisplayName = null;
 
                 if (rawName.Equals("ArtifactContentEvent", StringComparison.Ordinal))
                 {
                     FieldInfo? contentField = null;
                     string? resolvedFieldName = null;
-                    foreach (string candidateName in new[] { "content", "item", "artifact" })
+                    foreach (string candidateName in new[] { "artifact", "content", "item" })
                     {
                         contentField = AccessTools.Field(eventType, candidateName);
                         if (contentField != null)
