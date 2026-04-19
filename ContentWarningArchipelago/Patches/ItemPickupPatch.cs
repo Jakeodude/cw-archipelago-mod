@@ -16,7 +16,7 @@
 //
 //   PHYSICAL ITEM PICKUP (dungeon / surface)
 //   ────────────────────────────────────────
-//   • PickupHandler.RPC_RequestPickup – the networked RPC fired on the host
+//   • Pickup.RPC_RequestPickup – the networked RPC fired on the host
 //     when any player grabs a Pickup from the world.
 //   • We patch this to handle pickup-based location checks (e.g., picking up
 //     a specific piece of filming equipment triggers a location).
@@ -172,7 +172,7 @@ namespace ContentWarningArchipelago.Patches
 
     // ======================================================================
     // PATCH 2 — Physical item picked up from the world
-    // Target: PickupHandler.RPC_RequestPickup
+    // Target: Pickup.RPC_RequestPickup
     // Purpose: Detect when a player picks up a specific item (e.g. filming
     //          equipment) and fire the matching location check.
     //
@@ -188,18 +188,18 @@ namespace ContentWarningArchipelago.Patches
     {
         static MethodBase? TargetMethod()
         {
-            // "PickupHandler" and "RPC_RequestPickup" confirmed in string scan.
-            var type = AccessTools.TypeByName("PickupHandler");
+            // "Pickup" and "RPC_RequestPickup" confirmed in reference scan.
+            var type = AccessTools.TypeByName("Pickup");
             if (type == null)
             {
-                Plugin.Logger.LogWarning("[PickupPatch] Could not find type 'PickupHandler'. Patch skipped.");
+                Plugin.Logger.LogWarning("[PickupPatch] Could not find type 'Pickup'. Patch skipped.");
                 return null;
             }
 
             var method = AccessTools.Method(type, "RPC_RequestPickup");
             if (method == null)
             {
-                Plugin.Logger.LogWarning("[PickupPatch] Could not find 'RPC_RequestPickup' on PickupHandler. Patch skipped.");
+                Plugin.Logger.LogWarning("[PickupPatch] Could not find 'RPC_RequestPickup' on Pickup. Patch skipped.");
                 return null;
             }
 
@@ -209,7 +209,7 @@ namespace ContentWarningArchipelago.Patches
 
         /// <summary>
         /// Postfix fires after a pickup has been successfully grabbed.
-        /// __instance is the PickupHandler MonoBehaviour.
+        /// __instance is the Pickup MonoBehaviour.
         /// </summary>
         [HarmonyPostfix]
         static void Postfix(object __instance)
@@ -248,17 +248,35 @@ namespace ContentWarningArchipelago.Patches
         {
             Type t = instance.GetType();
 
-            // Try common field names for the item/pickup GameObject.
-            foreach (string fname in new[] { "m_pickup", "pickup", "m_item", "item" })
+            // Pickup.itemInstance -> ItemInstance.item -> Item.displayName
+            var itemInstanceField = AccessTools.Field(t, "itemInstance");
+            if (itemInstanceField != null)
             {
-                var field = AccessTools.Field(t, fname);
-                if (field == null) continue;
-                var value = field.GetValue(instance);
-                if (value is UnityEngine.Object unityObj)
-                    return unityObj.name;
+                var itemInstance = itemInstanceField.GetValue(instance);
+                if (itemInstance != null)
+                {
+                    var itemField = AccessTools.Field(itemInstance.GetType(), "item");
+                    if (itemField != null)
+                    {
+                        var item = itemField.GetValue(itemInstance);
+                        if (item != null)
+                        {
+                            // Prefer displayName, fall back to Unity Object.name.
+                            var displayNameField = AccessTools.Field(item.GetType(), "displayName");
+                            if (displayNameField != null)
+                            {
+                                var displayName = displayNameField.GetValue(item)?.ToString();
+                                if (!string.IsNullOrEmpty(displayName))
+                                    return displayName;
+                            }
+                            if (item is UnityEngine.Object unityItem)
+                                return unityItem.name;
+                        }
+                    }
+                }
             }
 
-            // Fallback: the handler itself might be on the pickup GameObject.
+            // Fallback: use the Pickup GameObject name.
             if (instance is Component comp)
                 return comp.gameObject.name;
 
