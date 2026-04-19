@@ -10,6 +10,7 @@
     <!-- Used by BepInEx.PluginInfoProps to generate MyPluginInfo.PLUGIN_GUID -->
     <BepInExPluginGuid>automagic.cw-archipelago</BepInExPluginGuid>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <CopyLocalLockFileAssemblies>true</CopyLocalLockFileAssemblies>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <!-- BepInEx.PluginInfoProps lives on the BepInEx NuGet feed -->
