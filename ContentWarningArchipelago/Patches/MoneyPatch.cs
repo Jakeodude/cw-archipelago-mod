@@ -3,17 +3,20 @@
 // Starting_budget/Patches/ShopHandlerPatch.cs.
 //
 // PURPOSE
-// When money AP items are received the handler in ItemData.cs first tries an
-// immediate RoomStats.AddMoney() call.  If RoomStats is not yet ready (loading
-// screen, non-master client, etc.) the amount is stored in
-// APSave.saveData.pendingMoney instead.  This patch drains that pending amount
-// every time the shop initialises (start of each new day), matching exactly the
-// pattern used by StartingBudget.
+// When AP items that grant in-game currency are received, ItemData.cs first
+// tries an immediate grant.  If the subsystem isn't ready the amount is stored
+// in a pending field on APSaveData.  This patch drains both pending queues
+// every time the shop initialises (start of each new day).
 //
-// MASTER-CLIENT GUARD
-// Money is a shared lobby resource; only the master client should call AddMoney.
-// Non-master clients accumulate the pending amount and it gets applied if/when
-// they become master, or the host applies it via a Photon RPC (see LateJoinSyncPatch).
+// PENDING MONEY — lobby-shared resource (master client only)
+//   Only the master client may call RoomStats.AddMoney.  Non-master clients
+//   accumulate pendingMoney until they become master, or it is applied via the
+//   host (see LateJoinSyncPatch).
+//
+// PENDING META COINS — per-player resource (all clients)
+//   MetaProgressionHandler is a per-player singleton and its AddMetaCoins call
+//   is safe to run on every client.  The master-client guard must NOT cover this
+//   drain so every player receives their queued meta coins.
 
 using ContentWarningArchipelago.Core;
 using HarmonyLib;
@@ -22,8 +25,8 @@ using Photon.Pun;
 namespace ContentWarningArchipelago.Patches
 {
     /// <summary>
-    /// Drains APSave.saveData.pendingMoney into the shared wallet whenever the
-    /// shop initialises for a new day (matches StartingBudget's approach exactly).
+    /// Drains pending AP currency into the game whenever the shop initialises
+    /// for a new day.
     /// </summary>
     [HarmonyPatch(typeof(ShopHandler))]
     internal static class MoneyPatch
@@ -32,20 +35,44 @@ namespace ContentWarningArchipelago.Patches
         [HarmonyPostfix]
         private static void InitShopPostfix(ShopHandler __instance)
         {
-            // Only the master client adds money (same guard StartingBudget uses).
-            if (!PhotonNetwork.IsMasterClient) return;
+            // ── Pending lobby money (master client only) ───────────────────────────
+            if (PhotonNetwork.IsMasterClient)
+            {
+                int pendingMoney = APSave.saveData.pendingMoney;
+                if (pendingMoney > 0)
+                {
+                    Plugin.Logger.LogInfo(
+                        $"[MoneyPatch] Draining {pendingMoney} pending AP money into shop wallet.");
 
-            int pending = APSave.saveData.pendingMoney;
-            if (pending <= 0) return;
+                    __instance.m_RoomStats.AddMoney(pendingMoney);
 
-            Plugin.Logger.LogInfo(
-                $"[MoneyPatch] Draining {pending} pending AP money into shop wallet.");
+                    APSave.saveData.pendingMoney = 0;
+                    APSave.Flush();
+                }
+            }
 
-            __instance.m_RoomStats.AddMoney(pending);
+            // ── Pending Meta Coins (all clients — per-player currency) ─────────────
+            // MetaProgressionHandler is per-player; every client drains their own
+            // queue independently.  No master-client guard needed here.
+            int pendingMC = APSave.saveData.pendingMetaCoins;
+            if (pendingMC > 0)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[MoneyPatch] Draining {pendingMC} pending AP Meta Coins into MetaProgressionHandler.");
 
-            // Clear the queue and persist.
-            APSave.saveData.pendingMoney = 0;
-            APSave.Flush();
+                try
+                {
+                    MetaProgressionHandler.AddMetaCoins(pendingMC);
+                    APSave.saveData.pendingMetaCoins = 0;
+                    APSave.Flush();
+                }
+                catch (System.Exception ex)
+                {
+                    Plugin.Logger.LogWarning(
+                        $"[MoneyPatch] MetaProgressionHandler.AddMetaCoins failed: {ex.Message}. " +
+                        $"Will retry on next InitShop.");
+                }
+            }
         }
     }
 }

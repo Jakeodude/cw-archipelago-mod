@@ -85,6 +85,22 @@ namespace ContentWarningArchipelago.Core
         /// singleton isn't ready yet.
         /// </summary>
         public int pendingMetaCoins = 0;
+
+        // ------------------------------------------------------------------ Hat shop (session-only)
+
+        /// <summary>
+        /// Hats unlocked during the current Archipelago session by purchasing them
+        /// from the hat shop.  This is <b>not</b> persisted to disk (<c>[JsonIgnore]</c>)
+        /// so it always starts empty when the AP client connects; hats must be
+        /// re-purchased each run.
+        /// <para>
+        /// When AP is active, <c>MetaProgressionHandler.GetUnlockedHats()</c> is
+        /// patched to return this set instead of the native save, making hat
+        /// ownership purely session-scoped.
+        /// </para>
+        /// </summary>
+        [JsonIgnore]
+        public HashSet<int> sessionUnlockedHats = new HashSet<int>();
     }
 
     /// <summary>Static façade that owns the single save-data instance.</summary>
