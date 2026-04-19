@@ -5,8 +5,11 @@ using BepInEx;
 using BepInEx.Logging;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
-using HarmonyLib;
 using ContentWarningArchipelago.UI;
+using ExitGames.Client.Photon;
+using HarmonyLib;
+using Photon.Pun;
+using Photon.Realtime;
 
 namespace ContentWarningArchipelago
 {
@@ -34,6 +37,21 @@ namespace ContentWarningArchipelago
         public static int    apPort     => APConfig?.port.Value     ?? 38281;
         public static string apPassword => APConfig?.password.Value ?? "";
         public static string apSlot     => APConfig?.slot.Value     ?? "";
+
+        // ------------------------------------------------------------------ Photon event codes
+
+        /// <summary>
+        /// Custom Photon event code used to broadcast a "location found" HUD
+        /// notification from the player who triggered a check to all other
+        /// players in the lobby.
+        ///
+        /// Raised in <c>ArchipelagoClient.ActivateCheck</c> via
+        /// <c>PhotonNetwork.RaiseEvent</c> with <c>ReceiverGroup.Others</c>.
+        /// Received here in <see cref="OnPhotonEventReceived"/>.
+        ///
+        /// Value 73 is arbitrary; choose any byte not used by the game itself.
+        /// </summary>
+        internal const byte APLocationFoundEventCode = 73;
 
         // ------------------------------------------------------------------ Unity lifecycle
 
@@ -78,6 +96,52 @@ namespace ContentWarningArchipelago
             connection.checkItemsReceived?.MoveNext();
             connection.incomingItemHandler?.MoveNext();
             connection.outgoingCheckHandler?.MoveNext();
+        }
+
+        // ------------------------------------------------------------------ Photon event subscription
+
+        /// <summary>
+        /// Subscribe to Photon's low-level event stream so we can receive the
+        /// <see cref="APLocationFoundEventCode"/> notification broadcast by other
+        /// players when they complete an AP check.
+        /// <para>
+        /// <c>OnEnable</c> / <c>OnDisable</c> are the correct Unity lifecycle hooks
+        /// for MonoBehaviour event subscriptions — they fire symmetrically on
+        /// enable/disable and on object destruction.
+        /// </para>
+        /// </summary>
+        private void OnEnable()
+        {
+            PhotonNetwork.NetworkingClient.EventReceived += OnPhotonEventReceived;
+        }
+
+        private void OnDisable()
+        {
+            PhotonNetwork.NetworkingClient.EventReceived -= OnPhotonEventReceived;
+        }
+
+        /// <summary>
+        /// Handles Photon custom events raised by other clients.
+        ///
+        /// <see cref="APLocationFoundEventCode"/> — received when any other player in
+        /// the lobby completes an AP check.  Displays the "Location Found!" HUD
+        /// notification locally so the whole team stays informed.
+        ///
+        /// Photon dispatches this on the Unity main thread, so it is safe to call
+        /// Unity APIs directly from here.
+        /// </summary>
+        private static void OnPhotonEventReceived(EventData eventData)
+        {
+            if (eventData.Code == APLocationFoundEventCode)
+            {
+                string locName = eventData.CustomData as string ?? string.Empty;
+                if (!string.IsNullOrEmpty(locName))
+                {
+                    Logger.LogDebug(
+                        $"[CWArch] Received remote location-found notification: '{locName}'");
+                    APNotificationUI.ShowLocationFound(locName);
+                }
+            }
         }
 
         // ------------------------------------------------------------------ Public API

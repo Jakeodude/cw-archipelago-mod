@@ -14,6 +14,9 @@ using Archipelago.MultiClient.Net.Models;
 using Archipelago.MultiClient.Net.Packets;
 using ContentWarningArchipelago.Data;
 using ContentWarningArchipelago.UI;
+using ExitGames.Client.Photon;
+using Photon.Pun;
+using Photon.Realtime;
 using UnityEngine;
 
 namespace ContentWarningArchipelago.Core
@@ -184,8 +187,32 @@ namespace ContentWarningArchipelago.Core
             string locName = LocationData.GetName(locationId);
             Plugin.Logger.LogInfo($"[AP] Checking location: {locName} ({locationId})");
 
-            // Show a HUD notification so the player sees feedback when a check fires.
+            // Show a HUD notification so the local player sees feedback when a check fires.
             APNotificationUI.ShowLocationFound(locName);
+
+            // Broadcast the location-found notification to all OTHER players in the Photon
+            // lobby so everyone sees who found a check (surface or underground).
+            // Plugin.APLocationFoundEventCode is received by Plugin.OnPhotonEventReceived,
+            // which calls APNotificationUI.ShowLocationFound on the remote clients.
+            if (PhotonNetwork.InRoom && PhotonNetwork.CurrentRoom.PlayerCount > 1)
+            {
+                try
+                {
+                    var raiseOptions = new RaiseEventOptions { Receivers = ReceiverGroup.Others };
+                    PhotonNetwork.RaiseEvent(
+                        Plugin.APLocationFoundEventCode,
+                        locName,
+                        raiseOptions,
+                        SendOptions.SendReliable);
+                    Plugin.Logger.LogDebug(
+                        $"[AP] Broadcast location-found notification for '{locName}' to other players.");
+                }
+                catch (Exception ex)
+                {
+                    Plugin.Logger.LogWarning(
+                        $"[AP] RaiseEvent for location notification failed: {ex.Message}");
+                }
+            }
 
             // Record locally first so we never double-send even if the server call throws.
             APSave.AddLocationChecked(locationId);

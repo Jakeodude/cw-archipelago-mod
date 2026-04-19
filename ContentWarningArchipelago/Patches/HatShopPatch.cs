@@ -526,10 +526,26 @@ namespace ContentWarningArchipelago.Patches
             return method;
         }
 
+        /// <summary>
+        /// Postfix on RPCA_StockShop — runs on ALL clients after Restock() has populated
+        /// the shop slots.
+        ///
+        /// HOST PRIORITY: Only the master client scouts AP locations.  After scouting,
+        /// the master broadcasts the resolved item names to all clients via
+        /// <c>RPCA_SyncArchipelagoLabels</c> on the HatShop's existing PhotonView.
+        /// Non-master clients clear stale labels and wait for the RPC.
+        /// </summary>
         [HarmonyPostfix]
         private static void Postfix(object __instance)
         {
             if (!Plugin.connection.connected) return;
+
+            // Clear stale scouted names on every client so the previous shop
+            // rotation's labels never bleed into the new one.
+            ScoutedNames.Clear();
+
+            // Only the master client scouts and broadcasts.
+            if (!PhotonNetwork.IsMasterClient) return;
             if (Plugin.connection.session == null) return;
 
             // Retrieve the public hatBuyInteractables list.
@@ -537,14 +553,31 @@ namespace ContentWarningArchipelago.Patches
             var slots = hbiField?.GetValue(__instance) as List<HatBuyInteractable>;
             if (slots == null || slots.Count == 0) return;
 
-            // Clear stale scouted names from the previous shop rotation.
-            ScoutedNames.Clear();
+            // Ensure HatShopAPSyncBehaviour is attached to this GameObject so Photon
+            // can dispatch RPCA_SyncArchipelagoLabels to it via the HatShop's PhotonView.
+            var hatShopMono = __instance as UnityEngine.MonoBehaviour;
+            if (hatShopMono != null &&
+                hatShopMono.gameObject.GetComponent<HatShopAPSyncBehaviour>() == null)
+            {
+                hatShopMono.gameObject.AddComponent<HatShopAPSyncBehaviour>();
+                Plugin.Logger.LogInfo(
+                    "[HatShopRestockLabelPatch] Attached HatShopAPSyncBehaviour to HatShop GameObject.");
+            }
 
-            // Fire-and-forget async scout + label update.
-            _ = UpdateHatLabelsAsync(slots);
+            // Fire-and-forget: scout on master, then broadcast labels to all clients.
+            _ = UpdateHatLabelsAsync(slots, __instance);
         }
 
-        private static async Task UpdateHatLabelsAsync(List<HatBuyInteractable> slots)
+        /// <summary>
+        /// Master-client-only: scouts AP locations for every occupied hat slot,
+        /// builds a labels array (one entry per slot, empty string if unresolved),
+        /// then broadcasts the array to ALL clients via the HatShop's PhotonView RPC
+        /// <c>RPCA_SyncArchipelagoLabels</c>.  The RPC handler on each client applies
+        /// the labels to the shop UI and populates <see cref="ScoutedNames"/>.
+        /// </summary>
+        private static async Task UpdateHatLabelsAsync(
+            List<HatBuyInteractable> slots,
+            object hatShopInstance)
         {
             try
             {
@@ -566,48 +599,49 @@ namespace ContentWarningArchipelago.Patches
 
                 if (locationIds.Count == 0)
                 {
-                    Plugin.Logger.LogDebug("[HatShopRestockLabelPatch] No resolvable hat locations — labels not updated.");
+                    Plugin.Logger.LogDebug(
+                        "[HatShopRestockLabelPatch] No resolvable hat locations — labels not broadcast.");
                     return;
                 }
 
                 Plugin.Logger.LogInfo(
-                    $"[HatShopRestockLabelPatch] Scouting {locationIds.Count} hat location(s)…");
+                    $"[HatShopRestockLabelPatch] Master scouting {locationIds.Count} hat location(s)…");
 
-                // ── Scout locations ────────────────────────────────────────────────────
-                // ScoutLocationsAsync returns Task<Dictionary<long, ScoutedItemInfo>>.
+                // ── Scout locations (master client only) ───────────────────────────────
                 var session = Plugin.connection.session;
                 if (session == null) return;
 
                 var scouted = await session.Locations.ScoutLocationsAsync(locationIds.ToArray());
                 if (scouted == null) return;
 
-                // ── Update name labels ─────────────────────────────────────────────────
-                for (int i = 0; i < slots.Count; i++)
+                // ── Build labels array (one entry per slot, empty if not resolved) ─────
+                var labels = new string[slots.Count];
+                for (int i = 0; i < labels.Length; i++)
                 {
-                    if (!slotLocations.TryGetValue(i, out long locId)) continue;
-                    if (!scouted.TryGetValue(locId, out var info)) continue;
+                    if (!slotLocations.TryGetValue(i, out long locId)) { labels[i] = string.Empty; continue; }
+                    if (!scouted.TryGetValue(locId, out var info))     { labels[i] = string.Empty; continue; }
+                    labels[i] = info.ItemName ?? string.Empty;
+                }
 
-                    var hbi = slots[i];
-                    if (hbi == null || hbi.IsEmpty || hbi.nameText == null) continue;
+                // ── Broadcast to ALL clients (including master) via the HatShop's PhotonView ──
+                // Photon dispatches RPCA_SyncArchipelagoLabels to every MonoBehaviour on the
+                // same GameObject as the PhotonView — including HatShopAPSyncBehaviour.
+                var viewField   = AccessTools.Field(hatShopInstance.GetType(), "view");
+                var photonView  = viewField?.GetValue(hatShopInstance) as PhotonView;
 
-                    string apItemName = info.ItemName;
-
-                    // ── Set text ───────────────────────────────────────────────────────
-                    hbi.nameText.text = apItemName;
-
-                    // ── Enable Best Fit / Auto-Size so long AP names don't overflow ────
-                    // Capture the editor-set font size as the upper bound (min 10 pt).
-                    float originalSize = hbi.nameText.fontSize;
-                    hbi.nameText.enableAutoSizing = true;
-                    hbi.nameText.fontSizeMin      = 1f;
-                    hbi.nameText.fontSizeMax      = Mathf.Max(10f, originalSize);
-
-                    // ── Cache for the hover-tooltip patch ──────────────────────────────
-                    ScoutedNames[hbi] = apItemName;
-
+                if (photonView != null && HatShopAPSyncBehaviour.Instance != null)
+                {
                     Plugin.Logger.LogInfo(
-                        $"[HatShopRestockLabelPatch] Slot {i}: '{hbi.ihat?.GetName() ?? "?"}' " +
-                        $"→ AP item '{apItemName}' (autoSize max={hbi.nameText.fontSizeMax:F1}pt)");
+                        $"[HatShopRestockLabelPatch] Broadcasting {labels.Length} AP label(s) to all clients.");
+                    photonView.RPC("RPCA_SyncArchipelagoLabels", RpcTarget.All, (object)labels);
+                }
+                else
+                {
+                    // Fallback: apply labels locally only (e.g. solo / offline mode).
+                    Plugin.Logger.LogWarning(
+                        "[HatShopRestockLabelPatch] PhotonView or APSyncBehaviour unavailable — " +
+                        "applying labels locally.");
+                    HatShopAPSyncBehaviour.Instance?.RPCA_SyncArchipelagoLabels(labels);
                 }
             }
             catch (Exception ex)
@@ -647,6 +681,111 @@ namespace ContentWarningArchipelago.Patches
             string hatName = __instance.ihat?.GetName() ?? string.Empty;
             if (!string.IsNullOrEmpty(hatName))
                 __result = __result.Replace(hatName, apName);
+        }
+    }
+
+    // =========================================================================
+    // HatShopAPSyncBehaviour
+    //
+    // A lightweight MonoBehaviour attached at runtime to the HatShop's
+    // GameObject (which already owns the game's PhotonView).  Because Photon
+    // dispatches a PhotonView RPC to every MonoBehaviour on the same
+    // GameObject, attaching this component is sufficient for the master client
+    // to call:
+    //
+    //   hatShopPhotonView.RPC("RPCA_SyncArchipelagoLabels", RpcTarget.All, labels)
+    //
+    // and have it execute here on every connected client — without needing a
+    // second PhotonView or any network-instantiated prefab.
+    // =========================================================================
+
+    /// <summary>
+    /// Receives the master client's scouted AP item labels and applies them
+    /// to the hat shop UI on every Photon client.
+    /// </summary>
+    internal class HatShopAPSyncBehaviour : MonoBehaviour
+    {
+        /// <summary>
+        /// Singleton reference so <see cref="HatShopRestockLabelPatch"/> can
+        /// confirm the component exists before sending the RPC.
+        /// </summary>
+        internal static HatShopAPSyncBehaviour? Instance { get; private set; }
+
+        private void Awake()
+        {
+            Instance = this;
+            Plugin.Logger.LogDebug("[HatShopAPSyncBehaviour] Attached to HatShop.");
+        }
+
+        private void OnDestroy()
+        {
+            if (Instance == this) Instance = null;
+        }
+
+        /// <summary>
+        /// Called on <b>all</b> clients (including the master) by the master client
+        /// after it has scouted the hat shop's AP locations.
+        ///
+        /// Updates each occupied slot's name label with the corresponding AP item
+        /// name and caches the mapping in <see cref="HatShopRestockLabelPatch.ScoutedNames"/>
+        /// so the hover-tooltip patch (<see cref="HatBuyHoverPatch"/>) can use it.
+        /// </summary>
+        /// <param name="labels">
+        /// One entry per hat shop slot in order.  Empty string means no AP item
+        /// was resolved for that slot — the slot label is left unchanged.
+        /// </param>
+        [PunRPC]
+        public void RPCA_SyncArchipelagoLabels(string[] labels)
+        {
+            Plugin.Logger.LogInfo(
+                $"[HatShopAPSyncBehaviour] RPCA_SyncArchipelagoLabels received ({labels.Length} label(s)).");
+
+            // ── Locate the HatShop instance via reflection ─────────────────────────
+            var hatShopType   = AccessTools.TypeByName("HatShop");
+            var instanceField = hatShopType != null ? AccessTools.Field(hatShopType, "instance") : null;
+            var hatShop       = instanceField?.GetValue(null);
+
+            if (hatShop == null)
+            {
+                Plugin.Logger.LogWarning("[HatShopAPSyncBehaviour] HatShop.instance is null — cannot apply labels.");
+                return;
+            }
+
+            var hbiField = AccessTools.Field(hatShop.GetType(), "hatBuyInteractables");
+            var slots    = hbiField?.GetValue(hatShop) as List<HatBuyInteractable>;
+
+            if (slots == null)
+            {
+                Plugin.Logger.LogWarning("[HatShopAPSyncBehaviour] Could not retrieve hatBuyInteractables.");
+                return;
+            }
+
+            // ── Clear and repopulate ScoutedNames ──────────────────────────────────
+            HatShopRestockLabelPatch.ScoutedNames.Clear();
+
+            for (int i = 0; i < slots.Count && i < labels.Length; i++)
+            {
+                string apItemName = labels[i];
+                if (string.IsNullOrEmpty(apItemName)) continue;
+
+                var hbi = slots[i];
+                if (hbi == null || hbi.IsEmpty || hbi.nameText == null) continue;
+
+                // ── Update the shop sign label ─────────────────────────────────────
+                hbi.nameText.text = apItemName;
+
+                // ── Enable Best Fit / Auto-Size so long AP names don't overflow ────
+                float originalSize = hbi.nameText.fontSize;
+                hbi.nameText.enableAutoSizing = true;
+                hbi.nameText.fontSizeMin      = 1f;
+                hbi.nameText.fontSizeMax      = Mathf.Max(10f, originalSize);
+
+                // ── Cache for hover-tooltip ────────────────────────────────────────
+                HatShopRestockLabelPatch.ScoutedNames[hbi] = apItemName;
+
+                Plugin.Logger.LogInfo(
+                    $"[HatShopAPSyncBehaviour] Slot {i} → '{apItemName}'");
+            }
         }
     }
 }

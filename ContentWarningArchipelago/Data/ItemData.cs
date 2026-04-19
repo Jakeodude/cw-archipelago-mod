@@ -229,30 +229,40 @@ namespace ContentWarningArchipelago.Data
                 // Try immediate AddMoney via SurfaceNetworkHandler.RoomStats
                 // (master client only).  If not ready or not master, queue in
                 // pendingMoney which MoneyPatch drains on the next InitShop.
+                //
+                // HOST PRIORITY: Only the master client applies money grants.
+                // Non-master clients skip these entirely to prevent doubling the
+                // shared wallet when all players receive the same AP item.
                 // ==============================================================
                 case ItemNames.MoneySmall:
-                    GrantMoney(200, name, senderName);
+                    if (PhotonNetwork.IsMasterClient) GrantMoney(200, name, senderName);
                     break;
                 case ItemNames.MoneyMedium:
-                    GrantMoney(400, name, senderName);
+                    if (PhotonNetwork.IsMasterClient) GrantMoney(400, name, senderName);
                     break;
                 case ItemNames.MoneyLarge:
-                    GrantMoney(600, name, senderName);
+                    if (PhotonNetwork.IsMasterClient) GrantMoney(600, name, senderName);
                     break;
 
                 // ==============================================================
                 // META COINS — direct call to MetaProgressionHandler.AddMetaCoins
                 // (same static method the game itself uses in console commands).
                 // Also calls UserInterface.ShowMoneyNotification internally.
+                //
+                // HOST PRIORITY: Only the master client grants MetaCoins.
+                // MetaProgressionHandler.AddMetaCoins writes to a shared save; if
+                // every connected client called it, each player would receive
+                // the full amount independently, effectively multiplying the grant
+                // by the player count.
                 // ==============================================================
                 case ItemNames.MetaCoinsSmall:
-                    GrantMetaCoins(1000, name);
+                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(1000, name);
                     break;
                 case ItemNames.MetaCoinsMedium:
-                    GrantMetaCoins(2000, name);
+                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(2000, name);
                     break;
                 case ItemNames.MetaCoinsLarge:
-                    GrantMetaCoins(3000, name);
+                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(3000, name);
                     break;
 
                 // ==============================================================
