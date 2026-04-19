@@ -338,158 +338,98 @@ namespace ContentWarningArchipelago.Patches
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Iterates the ContentBuffer's internal frames/events to find filmed
-        /// entities and fire the corresponding "Filmed X" AP location checks.
-        /// Uses reflection since ContentBuffer internals are not in the reference.
+        /// Iterates the ContentBuffer's <c>buffer</c> list (List&lt;BufferedContent&gt;),
+        /// navigates the known field chain
+        ///   BufferedContent.frame → ContentEventFrame.contentEvent → ContentEvent subclass,
+        /// and fires "Filmed X" AP location checks for each distinct entity type found.
+        ///
+        /// Field names confirmed from game source (MonsterEventCombiner.cs uses the same path):
+        ///   ContentBuffer.buffer          — List&lt;BufferedContent&gt;
+        ///   BufferedContent.frame         — ContentEventFrame
+        ///   ContentEventFrame.contentEvent — ContentEvent (MonsterContentEvent subclass at runtime)
+        ///   contentEvent.GetType().Name   — entity class name (matches MonsterFilmingData keys)
+        ///   contentEvent.GetID()          — ushort type ID (numeric fallback)
         /// </summary>
         private static void FireFilmingChecks(object buffer)
         {
-            // Track which location names we've already fired this evaluation
-            // to avoid duplicate checks if the same entity appears in many frames.
             var fired = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            // Strategy: walk every field/property on the ContentBuffer looking
-            // for a collection of frames or events, then inspect each item.
             Type bufferType = buffer.GetType();
 
-            foreach (FieldInfo field in bufferType.GetFields(
-                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            // ContentBuffer.buffer → List<BufferedContent>
+            var bufferListField = AccessTools.Field(bufferType, "buffer");
+            if (bufferListField == null)
             {
-                object? fieldValue = field.GetValue(buffer);
-                if (fieldValue == null) continue;
+                Plugin.Logger.LogWarning("[ContentEvaluatorPatch] Could not find 'buffer' field on ContentBuffer. Filming checks skipped.");
+                return;
+            }
 
-                // If the field is a collection, iterate it.
-                if (fieldValue is IEnumerable enumerable && !(fieldValue is string))
+            var bufferList = bufferListField.GetValue(buffer) as IEnumerable;
+            if (bufferList == null) return;
+
+            foreach (object? bufferedContent in bufferList)
+            {
+                if (bufferedContent == null) continue;
+
+                // BufferedContent.frame → ContentEventFrame
+                var frameField = AccessTools.Field(bufferedContent.GetType(), "frame");
+                if (frameField == null) continue;
+                var frame = frameField.GetValue(bufferedContent);
+                if (frame == null) continue;
+
+                // ContentEventFrame.contentEvent → ContentEvent (MonsterContentEvent subclass)
+                var contentEventField = AccessTools.Field(frame.GetType(), "contentEvent");
+                if (contentEventField == null) continue;
+                var contentEvent = contentEventField.GetValue(frame);
+                if (contentEvent == null) continue;
+
+                // Primary identifier: runtime class name (e.g. "Slurper", "Zombe")
+                string rawName = contentEvent.GetType().Name;
+
+                // Numeric fallback: contentEvent.GetID() returns ushort
+                int typeId = -1;
+                var getIdMethod = contentEvent.GetType().GetMethod(
+                    "GetID", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+                if (getIdMethod != null)
                 {
-                    foreach (object? item in enumerable)
-                    {
-                        if (item == null) continue;
-                        TryFireFromContentItem(item, fired);
-                    }
+                    var raw = getIdMethod.Invoke(contentEvent, null);
+                    if (raw != null) typeId = Convert.ToInt32(raw);
                 }
-                else
-                {
-                    TryFireFromContentItem(fieldValue, fired);
-                }
+
+                TryFireEntityCheck(rawName, typeId, fired);
             }
         }
 
         /// <summary>
-        /// Tries to extract an entity type identifier from a single content item
-        /// (ContentEventFrame, ContentEvent, or similar) and fire the AP check.
+        /// Resolves a filmed entity to an AP location name and sends the check.
+        /// Tries the raw class name first, then strips a "ContentEvent" suffix as a
+        /// fallback (handles both "Slurper" and "SlurperContentEvent" style names),
+        /// then falls back to the numeric ID.
         /// </summary>
-        private static void TryFireFromContentItem(object item, HashSet<string> fired)
+        private static void TryFireEntityCheck(string rawName, int typeId, HashSet<string> fired)
         {
-            Type t = item.GetType();
+            // 1. Try the class name directly (e.g. "Slurper")
+            string? locationName = MonsterFilmingData.TryGetLocationByTypeName(rawName);
 
-            // --- Strategy 1: look for an IEnumerable of child events ---------------
-            foreach (FieldInfo f in t.GetFields(
-                         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            // 2. Try stripping "ContentEvent" suffix (e.g. "SlurperContentEvent" → "Slurper")
+            if (locationName == null && rawName.EndsWith("ContentEvent", StringComparison.OrdinalIgnoreCase))
             {
-                object? val = f.GetValue(item);
-                if (val is IEnumerable innerEnum && !(val is string))
-                {
-                    foreach (object? child in innerEnum)
-                    {
-                        if (child != null)
-                            TryFireFromLeafEvent(child, fired);
-                    }
-                }
+                string stripped = rawName.Substring(0, rawName.Length - "ContentEvent".Length);
+                locationName = MonsterFilmingData.TryGetLocationByTypeName(stripped);
             }
 
-            // --- Strategy 2: treat this item itself as a leaf event ----------------
-            TryFireFromLeafEvent(item, fired);
-        }
-
-        /// <summary>
-        /// Tries to extract a type identifier from a leaf content event object
-        /// and fire the corresponding "Filmed X" check.
-        /// Probes common field/property names for entity type information.
-        /// </summary>
-        private static void TryFireFromLeafEvent(object ev, HashSet<string> fired)
-        {
-            Type t = ev.GetType();
-
-            // ---- Try to get a string type name ----
-            string? typeName = null;
-
-            // Probe fields: "type", "contentType", "entityType", "creatureType",
-            //               "name", "entityName", "contentTypeName"
-            foreach (string candidate in new[]
-            {
-                "type", "contentType", "entityType", "creatureType",
-                "entityName", "contentTypeName", "typeName"
-            })
-            {
-                var field = AccessTools.Field(t, candidate);
-                if (field != null)
-                {
-                    object? raw = field.GetValue(ev);
-                    if (raw != null)
-                    {
-                        typeName = raw.ToString();
-                        break;
-                    }
-                }
-                var prop = AccessTools.Property(t, candidate);
-                if (prop != null)
-                {
-                    object? raw = prop.GetValue(ev);
-                    if (raw != null)
-                    {
-                        typeName = raw.ToString();
-                        break;
-                    }
-                }
-            }
-
-            // Also try to get a numeric ID
-            int typeId = -1;
-            foreach (string candidate in new[] { "id", "typeId", "entityId", "contentId", "creatureId" })
-            {
-                var field = AccessTools.Field(t, candidate);
-                if (field != null && field.GetValue(ev) is int rawId)
-                {
-                    typeId = rawId;
-                    break;
-                }
-                var prop = AccessTools.Property(t, candidate);
-                if (prop != null && prop.GetValue(ev) is int rawPropId)
-                {
-                    typeId = rawPropId;
-                    break;
-                }
-            }
-
-            // ---- Resolve to AP location name ----
-            string? locationName = null;
-
-            if (!string.IsNullOrEmpty(typeName))
-            {
-                locationName = MonsterFilmingData.TryGetLocationByTypeName(typeName!);
-                if (locationName == null)
-                {
-                    // Log for discovery — user can add to MonsterFilmingData.
-                    Plugin.Logger.LogDebug(
-                        $"[ContentEvaluatorPatch] Unrecognised entity type string: '{typeName}' " +
-                        $"(class: {t.Name}). Add to MonsterFilmingData if this is a monster/artifact.");
-                }
-            }
-
+            // 3. Numeric ID fallback
             if (locationName == null && typeId >= 0)
-            {
                 locationName = MonsterFilmingData.TryGetLocationById(typeId);
-                if (locationName == null)
-                {
-                    Plugin.Logger.LogDebug(
-                        $"[ContentEvaluatorPatch] Unrecognised entity type ID: {typeId} " +
-                        $"(class: {t.Name}). Add to MonsterFilmingData.EntityIdToLocation.");
-                }
+
+            if (locationName == null)
+            {
+                Plugin.Logger.LogDebug(
+                    $"[ContentEvaluatorPatch] Unknown entity: class='{rawName}', ID={typeId}. " +
+                    $"Add to MonsterFilmingData if this is a monster/artifact.");
+                return;
             }
 
-            if (string.IsNullOrEmpty(locationName)) return;
-
-            // ---- Fire the check (once per location per evaluation) ----
+            // Fire once per distinct location per evaluation pass
             if (fired.Contains(locationName)) return;
             fired.Add(locationName);
 
@@ -509,44 +449,47 @@ namespace ContentWarningArchipelago.Patches
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Reads the current in-game day number from SurfaceNetworkHandler
-        /// or any other known game manager.  Returns 0 if unresolvable.
+        /// Reads the current in-game day number.  Returns 0 if unresolvable.
+        ///
+        /// SurfaceNetworkHandler has NO direct day/currentDay field.
+        /// The day is stored in RoomStats.CurrentDay (confirmed from SurfaceNetworkHandler.cs):
+        ///   public static RoomStatsHolder RoomStats { get; private set; }
+        ///   RoomStats.CurrentDay  (property on RoomStatsHolder)
+        ///
+        /// The game also exposes GameAPI.CurrentDay which ContentBuffer.GenerateComments()
+        /// uses directly — that is the simplest and most reliable path.
         /// </summary>
         private static int TryGetCurrentDay()
         {
-            // Try static fields / singleton instances on known manager types.
-            foreach (string typeName in new[]
+            // Strategy 1: GameAPI.CurrentDay (static property)
+            // ContentBuffer.GenerateComments() uses this exact call internally.
+            var gameApiType = AccessTools.TypeByName("GameAPI");
+            if (gameApiType != null)
             {
-                "SurfaceNetworkHandler", "GameDirector", "GameManager"
-            })
-            {
-                var mgr = AccessTools.TypeByName(typeName);
-                if (mgr == null) continue;
-
-                foreach (string fname in new[] { "day", "currentDay", "dayNumber", "m_day", "m_currentDay" })
+                var prop = AccessTools.Property(gameApiType, "CurrentDay");
+                if (prop != null)
                 {
-                    // Direct static field.
-                    var sf = AccessTools.Field(mgr, fname);
-                    if (sf?.IsStatic == true)
+                    var val = prop.GetValue(null);
+                    if (val is int d && d > 0) return d;
+                }
+            }
+
+            // Strategy 2: SurfaceNetworkHandler.RoomStats (static property) → .CurrentDay
+            // RoomStats is a static property, not a field; CurrentDay is a property on RoomStatsHolder.
+            var snhType = AccessTools.TypeByName("SurfaceNetworkHandler");
+            if (snhType != null)
+            {
+                var roomStatsProp = AccessTools.Property(snhType, "RoomStats");
+                if (roomStatsProp != null)
+                {
+                    var roomStats = roomStatsProp.GetValue(null);
+                    if (roomStats != null)
                     {
-                        var val = sf.GetValue(null);
-                        if (val is int i && i > 0) return i;
-                    }
-
-                    // Instance via static "instance" / "Instance" field.
-                    foreach (string instName in new[] { "instance", "Instance" })
-                    {
-                        var instField = AccessTools.Field(mgr, instName);
-                        if (instField?.IsStatic != true) continue;
-
-                        var singleton = instField.GetValue(null);
-                        if (singleton == null) continue;
-
-                        var dayField = AccessTools.Field(singleton.GetType(), fname);
-                        if (dayField != null)
+                        var currentDayProp = AccessTools.Property(roomStats.GetType(), "CurrentDay");
+                        if (currentDayProp != null)
                         {
-                            var val = dayField.GetValue(singleton);
-                            if (val is int i2 && i2 > 0) return i2;
+                            var val = currentDayProp.GetValue(roomStats);
+                            if (val is int d && d > 0) return d;
                         }
                     }
                 }
