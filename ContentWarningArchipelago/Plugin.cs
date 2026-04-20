@@ -80,7 +80,7 @@ namespace ContentWarningArchipelago
 
             // Apply all Harmony patches declared in this assembly.
             // NOTE: MainMenuAPPatch is picked up by PatchAll() automatically via its
-            // [HarmonyPatch(typeof(Player), "Awake")] attribute — no manual wiring needed.
+            // [HarmonyPatch(typeof(MainMenuHandler), "Start")] attribute — no manual wiring needed.
             var harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             harmony.PatchAll();
 
@@ -92,7 +92,7 @@ namespace ContentWarningArchipelago
             connection = new ArchipelagoClient();
             Logger.LogInfo("[CWArch] ArchipelagoClient created. Waiting for connection.");
             // AP panel injection is handled automatically by the
-            // MainMenuAPPatch [HarmonyPatch(typeof(Player), "Awake")] postfix —
+            // MainMenuAPPatch [HarmonyPatch(typeof(MainMenuHandler), "Start")] postfix —
             // no manual call needed here.
         }
 

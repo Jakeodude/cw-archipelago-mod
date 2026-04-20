@@ -1,30 +1,28 @@
 // Patches/MainMenuAPPatch.cs
-// Injects the Archipelago connection panel into the in-game Escape Menu by
-// hooking EscapeMenu.OnEnable — the method called every time the player opens
-// the pause/escape menu.
+// Injects the Archipelago connection panel directly into the Main Menu title
+// screen by hooking MainMenuHandler.Start — the method that runs as soon as
+// the NewMainMenuOptimized scene is ready.
 //
 // Strategy:
-//   [HarmonyPatch(typeof(EscapeMenu), "OnEnable")] fires passively, with zero
-//   activity during startup, room-join, or voice-chat initialisation.  The mod
-//   is completely silent until the player literally presses Escape for the first
-//   time.  At that point __instance.gameObject IS the UI_EscapeMenu object, so
-//   InjectPanel receives it directly — no GameObject.Find, no polling, no
-//   coroutines, no timers.
-//
-//   A name-based duplicate guard means InjectPanel creates the panel only on
-//   the very first OnEnable call; subsequent Escape-key presses are no-ops.
+//   [HarmonyPatch(typeof(MainMenuHandler), "Start")] Postfix runs immediately
+//   after the main menu finishes its own Start(), at which point the
+//   MainMenuUIHandler Canvas hierarchy is fully constructed.  The AP panel is
+//   parented to the UIHandler so it sits in the same Canvas as the Host/Join
+//   buttons and is rendered at world-UI scale without any polling or coroutines.
 //
 // Placement:
-//   The panel is parented to the first matching child of UI_EscapeMenu —
-//   preferring "General", then "Pause", falling back to the root object.
-//   SetAsFirstSibling() places it above the Quit Game buttons in the sibling
-//   list so it never overlaps them.
+//   The panel is anchored to the top-right corner of the Canvas with a 10 px
+//   inset.  SetAsLastSibling() ensures it renders in front of the title-screen
+//   background graphics without overlapping the vanilla Host/Join buttons, which
+//   are typically centre-screen.
 //
 // Persistence / Cleanup:
-//   The panel lives in SurfaceScene.  A full scene transition back to
-//   NewMainMenuOptimized destroys every non-DontDestroyOnLoad object —
-//   including UI_EscapeMenu and our panel — automatically.  No explicit
-//   cleanup is required.
+//   The panel lives in NewMainMenuOptimized.  When the player hosts or joins a
+//   game, the scene transition to SurfaceScene destroys everything in the main
+//   menu automatically — no explicit cleanup required.
+//
+//   A name-based duplicate guard prevents double-injection on the off-chance
+//   Start() is called more than once.
 //
 // Multiplayer safety:
 //   This is a purely local Unity UI object.  It is never serialised or
@@ -39,56 +37,55 @@ using UnityEngine;
 namespace ContentWarningArchipelago.Patches
 {
     /// <summary>
-    /// Harmony postfix on <c>EscapeMenu.OnEnable</c>.
-    /// Injects the AP connection panel into the escape-menu hierarchy the first
-    /// time the player opens the pause menu.  Completely silent before that point.
+    /// Harmony postfix on <c>MainMenuHandler.Start</c>.
+    /// Injects the AP connection panel into the main-menu UI hierarchy the
+    /// moment the title screen is ready.
     /// </summary>
-    [HarmonyPatch(typeof(EscapeMenu), "OnEnable")]
+    [HarmonyPatch(typeof(MainMenuHandler), "Start")]
     internal static class MainMenuAPPatch
     {
         // ================================================================== Harmony postfix
 
         /// <summary>
-        /// Runs after <c>EscapeMenu.OnEnable()</c> every time the pause menu
-        /// is opened.  The duplicate guard in <see cref="InjectPanel"/> ensures
-        /// the panel is only created on the first call.
+        /// Runs after <c>MainMenuHandler.Start()</c>.
+        /// Duplicate guard prevents re-injection if <c>Start</c> fires again.
         /// </summary>
         // ReSharper disable once InconsistentNaming
-        private static void Postfix(EscapeMenu __instance)
+        private static void Postfix(MainMenuHandler __instance)
         {
-            // Fast-path: panel already exists from a previous open — do nothing.
+            // Fast-path: panel already exists — do nothing.
             if (GameObject.Find("AP_ConnectionPanel") != null) return;
 
             Plugin.Logger.LogDebug(
-                "[MainMenuAPPatch] EscapeMenu.OnEnable() — injecting AP panel for the first time.");
+                "[MainMenuAPPatch] MainMenuHandler.Start() completed — injecting AP panel.");
 
-            InjectPanel(__instance.gameObject);
+            InjectPanel(__instance);
         }
 
         // ================================================================== Panel creation
 
         /// <summary>
-        /// Creates the <see cref="APConnectionPanelUI"/> inside the escape menu.
+        /// Creates the <see cref="APConnectionPanelUI"/> inside the main-menu
+        /// UI hierarchy.
         /// </summary>
-        /// <param name="escapeMenu">
-        /// The <c>UI_EscapeMenu</c> GameObject received directly from the
-        /// <c>EscapeMenu.OnEnable</c> postfix — no <c>GameObject.Find</c> needed.
+        /// <param name="menu">
+        /// The <c>MainMenuHandler</c> instance received directly from the
+        /// postfix — no <c>GameObject.Find</c> needed.
         /// </param>
-        private static void InjectPanel(GameObject escapeMenu)
+        private static void InjectPanel(MainMenuHandler menu)
         {
             try
             {
                 Plugin.Logger.LogInfo(
-                    "[MainMenuAPPatch] Injecting AP panel into UI_EscapeMenu.");
+                    "[MainMenuAPPatch] Injecting AP panel into main-menu UI.");
 
-                // ---- Resolve parent: General > Pause > root ----
-                // We prefer a named sub-panel so the AP controls sit alongside the
-                // game's own pause-menu sections rather than floating loose at the
-                // top of the escape-menu hierarchy.
+                // ---- Choose parent ----
+                // Prefer UIHandler (the Canvas-backed UIPageHandler that owns the
+                // Host/Join buttons) so the panel inherits the same Canvas scaler.
+                // Fall back to the MainMenuHandler GameObject itself if UIHandler
+                // is somehow null.
                 Transform parentTransform =
-                    escapeMenu.transform.Find("General")
-                    ?? escapeMenu.transform.Find("Pause")
-                    ?? escapeMenu.transform;
+                    (menu.UIHandler != null ? menu.UIHandler.transform : menu.transform);
 
                 Plugin.Logger.LogDebug(
                     $"[MainMenuAPPatch] Using parent: {parentTransform.name} " +
@@ -98,9 +95,14 @@ namespace ContentWarningArchipelago.Patches
                 var panelGO = new GameObject("AP_ConnectionPanel");
                 panelGO.transform.SetParent(parentTransform, worldPositionStays: false);
 
+                // ---- Explicit scale reset ----
+                // Ensures the panel is not affected by any inherited world-space
+                // scaling on the parent transform.
+                panelGO.transform.localScale = Vector3.one;
+
                 // ---- RectTransform: top-right inset ----
-                // Anchor + pivot both at (1, 1) = top-right.
-                // anchoredPosition (-10, -10) = 10 px inset from the top-right edges.
+                // Anchor + pivot both at (1, 1) = top-right corner.
+                // anchoredPosition (-10, -10) = 10 px inset from the edges.
                 // sizeDelta.x fixes the width; ContentSizeFitter (added by
                 // APConnectionPanelUI) drives the height automatically.
                 var rect       = panelGO.GetComponent<RectTransform>()
@@ -116,10 +118,8 @@ namespace ContentWarningArchipelago.Patches
                 panelGO.AddComponent<APConnectionPanelUI>();
 
                 // ---- Activate panel and ensure every ancestor is also active ----
-                // If any parent in the hierarchy is inactive the panel will be
-                // invisible even though panelGO itself is enabled.  Walk the chain
-                // upward and activate any disabled ancestor so the panel is
-                // immediately visible when the player opens the Escape menu.
+                // Walk the parent chain and enable any inactive ancestor so the
+                // panel is immediately visible on the title screen.
                 panelGO.SetActive(true);
                 Transform ancestor = parentTransform;
                 while (ancestor != null)
@@ -133,14 +133,15 @@ namespace ContentWarningArchipelago.Patches
                     ancestor = ancestor.parent;
                 }
 
-                // ---- Layer: before Quit Game buttons ----
-                // SetAsFirstSibling places the panel at sibling-index 0 within the
-                // chosen parent, so it appears before the game's own action buttons
-                // (including Quit Game) and does not visually overlap them.
-                panelGO.transform.SetAsFirstSibling();
+                // ---- Render order: in front of title graphics ----
+                // SetAsLastSibling places the panel at the highest sibling index,
+                // so it is drawn on top of the background and title-screen art
+                // while leaving the Host/Join buttons (which are centre-screen)
+                // unobstructed.
+                panelGO.transform.SetAsLastSibling();
 
                 Plugin.Logger.LogInfo(
-                    "[MainMenuAPPatch] AP connection panel successfully injected into UI_EscapeMenu.");
+                    "[MainMenuAPPatch] AP connection panel successfully injected into main-menu UI.");
             }
             catch (System.Exception ex)
             {
