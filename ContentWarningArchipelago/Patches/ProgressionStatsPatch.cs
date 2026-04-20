@@ -167,16 +167,42 @@ namespace ContentWarningArchipelago.Patches
                 return;
             }
 
-            float newMax = 90f + level * 30f;
+            float newMax         = 90f + level * 30f;
+            float currentMax     = (float)maxTimeField.GetValue(entry);
+            float currentTimeLeft = (float)timeLeftField.GetValue(entry);
+
+            // Only update when maxTime has not yet been set to the upgraded value.
+            // ConfigItem fires every time the camera is equipped, so we must not
+            // unconditionally reset timeLeft or the camera refills film on every equip.
+            if (Mathf.Approximately(currentMax, newMax))
+            {
+                Plugin.Logger.LogDebug(
+                    $"[CameraUpgradePatch] Battery already at maxTime={newMax} s — skipping.");
+                return;
+            }
+
+            // maxTime needs to change — apply the upgrade.
             maxTimeField.SetValue(entry, newMax);
-            timeLeftField.SetValue(entry, newMax);   // refill to new maximum
+
+            // Only reset timeLeft to the new maximum when the camera is "fresh":
+            //   • timeLeft is still at the vanilla default (90 s) — never been used, OR
+            //   • maxTime was still at the vanilla default (90 s) — freshly spawned camera
+            //     that has never had an upgrade applied to it before.
+            // For cameras already in use (timeLeft < 90 s) we preserve the remaining film
+            // so that a re-equip or a new upgrade level does not silently refill the battery.
+            const float vanillaDefault = 90f;
+            bool isFresh = Mathf.Approximately(currentTimeLeft, vanillaDefault)
+                           || Mathf.Approximately(currentMax, vanillaDefault);
+            if (isFresh)
+                timeLeftField.SetValue(entry, newMax);
 
             // Mark dirty so Photon syncs the updated values to all clients.
             AccessTools.Method(entryType, "SetDirty")?.Invoke(entry, null);
 
+            float loggedTimeLeft = isFresh ? newMax : currentTimeLeft;
             Plugin.Logger.LogInfo(
                 $"[CameraUpgradePatch] Battery → maxTime={newMax} s, " +
-                $"timeLeft={newMax} s (level {level}).");
+                $"timeLeft={loggedTimeLeft} s (level {level}).");
         }
     }
 

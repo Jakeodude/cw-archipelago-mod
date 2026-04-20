@@ -185,6 +185,19 @@ namespace ContentWarningArchipelago.Patches
             Vector2 circle = UnityEngine.Random.insideUnitCircle * SpawnOffsetRadius;
             Vector3 spawnPos = local.Center() + new Vector3(circle.x, 0f, circle.y);
 
+            // Guard: BotHandler.instance may be null if the old-world scene is still
+            // initialising — Bot.Start() calls BotHandler.instance.bots.Add(this) which
+            // throws a NullReferenceException if BotHandler hasn't awakened yet.
+            // Defer by 2 s to allow the scene to finish initialising, then retry.
+            if (BotHandler.instance == null)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn: BotHandler.instance is null — " +
+                    $"retrying '{chosenMonster}' in 2 s.");
+                Plugin.Instance.StartCoroutine(RetrySpawnAfterDelay(local, chosenMonster, spawnPos, 2f));
+                return;
+            }
+
             Plugin.Logger.LogInfo(
                 $"[TrapHandler] MonsterSpawn: spawning '{chosenMonster}' " +
                 $"near {local.refs.view.Controller.NickName} at {spawnPos}.");
@@ -202,6 +215,44 @@ namespace ContentWarningArchipelago.Patches
             {
                 Plugin.Logger.LogWarning(
                     $"[TrapHandler] MonsterSpawn failed for '{chosenMonster}': {ex.Message}");
+            }
+        }
+
+        // ================================================================== Spawn retry coroutine
+
+        /// <summary>
+        /// Waits <paramref name="delay"/> seconds, then re-attempts the monster spawn
+        /// using the already-chosen monster and position.  This handles the case where
+        /// <c>BotHandler.instance</c> was null immediately after scene load.
+        /// </summary>
+        private static IEnumerator RetrySpawnAfterDelay(
+            Player local, string chosenMonster, Vector3 spawnPos, float delay)
+        {
+            Plugin.Logger.LogInfo(
+                $"[TrapHandler] MonsterSpawn (retry): waiting {delay} s for scene to finish " +
+                $"initialising before spawning '{chosenMonster}'…");
+            yield return new WaitForSeconds(delay);
+
+            if (BotHandler.instance == null)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn (retry): BotHandler.instance is still null " +
+                    $"after {delay} s — spawn of '{chosenMonster}' aborted.");
+                yield break;
+            }
+
+            Plugin.Logger.LogInfo(
+                $"[TrapHandler] MonsterSpawn (retry): spawning '{chosenMonster}' " +
+                $"near {local.refs.view.Controller.NickName} at {spawnPos}.");
+
+            try
+            {
+                MonsterSpawner.SpawnMonster(chosenMonster, spawnPos);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn (retry) failed for '{chosenMonster}': {ex.Message}");
             }
         }
     }
