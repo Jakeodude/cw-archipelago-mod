@@ -144,10 +144,15 @@ namespace ContentWarningArchipelago.Data
                 {
                     APSave.saveData.oxygenUpgradeLevel++;
                     APSave.Flush();
+                    // Proportionally scale the player's current oxygen so the UI
+                    // bar percentage is preserved when the cap grows mid-dive.
+                    // (e.g., 80% of 500 s → 80% of 560 s — no jarring drop.)
+                    OxygenPatch.ApplyOxygenUpgrade(APSave.saveData.oxygenUpgradeLevel);
                     APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo(
                         $"[ItemData] Progressive Oxygen level {APSave.saveData.oxygenUpgradeLevel} — " +
-                        $"+{APSave.saveData.oxygenUpgradeLevel * 60} s bonus oxygen.");
+                        $"+60 s bonus oxygen (total cap " +
+                        $"{OxygenPatch.VanillaMaxOxygen + APSave.saveData.oxygenUpgradeLevel * 60f} s).");
                     break;
                 }
 
