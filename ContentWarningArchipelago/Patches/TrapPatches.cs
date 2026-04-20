@@ -19,8 +19,15 @@
 //   the spawned object's Bot component self-registers with BotHandler.instance
 //   in Bot.Start(), so BotHandler tracks it automatically.
 //   Position = Player.localPlayer.Center() + random horizontal offset.
+//
+//   GUARD: Monsters may only be spawned while players are underground
+//   (SurfaceNetworkHandler.Instance.IsOldWorld == true).  If the item arrives
+//   while the team is still on the surface, the spawn is DEFERRED via a Unity
+//   coroutine (WaitUntil) until the player enters the old world.  The spawn
+//   command is never silently discarded.
 
 using System;
+using System.Collections;
 using ContentWarningArchipelago.Core;
 using Photon.Pun;
 using UnityEngine;
@@ -92,6 +99,10 @@ namespace ContentWarningArchipelago.Patches
         /// via <c>HelperFunctions.GetGroundPos</c> and <c>PhotonNetwork.Instantiate</c>.
         /// The spawned monster's <c>Bot</c> component self-registers with
         /// <c>BotHandler.instance</c> in <c>Bot.Start()</c>.
+        ///
+        /// GUARD: If the local player is not yet in the old world (underground),
+        /// the spawn is deferred via a <c>WaitUntil</c> coroutine started on
+        /// <c>Plugin.Instance</c>.  The spawn is never silently cancelled.
         /// </summary>
         public static void ApplyMonsterSpawnTrap()
         {
@@ -108,6 +119,64 @@ namespace ContentWarningArchipelago.Patches
                 return;
             }
 
+            // Guard: monsters only exist in the old world (underground scene).
+            // SurfaceNetworkHandler.Instance is non-null only while the surface scene is
+            // loaded.  When players transition underground, the surface scene unloads and
+            // Instance becomes null — that null state means "we are in the old world".
+            // If we are still on the surface (Instance != null), defer the spawn via a
+            // WaitUntil coroutine so the command is never silently discarded.
+            if (SurfaceNetworkHandler.Instance != null)
+            {
+                Plugin.Logger.LogInfo(
+                    "[TrapHandler] MonsterSpawn: player is not in the old world — " +
+                    "deferring spawn until player is underground.");
+                Plugin.Instance.StartCoroutine(WaitForOldWorldThenSpawn());
+                return;
+            }
+
+            ExecuteMonsterSpawn(local);
+        }
+
+        // ================================================================== Deferred spawn coroutine
+
+        /// <summary>
+        /// Waits until the surface scene has unloaded (i.e. <c>SurfaceNetworkHandler.Instance</c>
+        /// becomes <c>null</c>), which signals that the player has transitioned underground
+        /// into the old world.  Then executes the monster spawn.
+        /// Started on <c>Plugin.Instance</c> so it survives scene transitions.
+        /// </summary>
+        private static IEnumerator WaitForOldWorldThenSpawn()
+        {
+            Plugin.Logger.LogInfo("[TrapHandler] MonsterSpawn (deferred): waiting for old world…");
+
+            // SurfaceNetworkHandler.Instance is null only when the surface scene is not loaded,
+            // meaning players have transitioned underground into the old world.
+            yield return new WaitUntil(() => SurfaceNetworkHandler.Instance == null);
+
+            var local = Player.localPlayer;
+            if ((object)local == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[TrapHandler] MonsterSpawn (deferred): Player.localPlayer is null " +
+                    "after entering old world — spawn aborted.");
+                yield break;
+            }
+
+            Plugin.Logger.LogInfo(
+                "[TrapHandler] MonsterSpawn (deferred): old world confirmed — executing spawn.");
+            ExecuteMonsterSpawn(local);
+        }
+
+        // ================================================================== Core spawn logic
+
+        /// <summary>
+        /// Picks a random monster from <see cref="MonsterPrefabNames"/>, applies a
+        /// random horizontal offset from <paramref name="local"/>'s position, and calls
+        /// <c>MonsterSpawner.SpawnMonster</c> which handles ground-snapping and
+        /// <c>PhotonNetwork.Instantiate</c>.
+        /// </summary>
+        private static void ExecuteMonsterSpawn(Player local)
+        {
             // Pick a random monster from the weighted list.
             int idx = UnityEngine.Random.Range(0, MonsterPrefabNames.Length);
             string chosenMonster = MonsterPrefabNames[idx];

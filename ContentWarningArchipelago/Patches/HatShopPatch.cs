@@ -207,13 +207,57 @@ namespace ContentWarningArchipelago.Patches
         /// Re-trigger HatShop.StockShop() so the hat shop is always seeded with
         /// RoomStats.CurrentDay rather than a real-world DateTime.
         /// Only the master client calls StockShop (which broadcasts the RPC to all).
+        ///
+        /// Guest path: if the local client is NOT the master and the shop is already
+        /// stocked (a late-join scenario), explicitly request a label sync from the
+        /// master client so AP item names appear on the shop signs.
         /// </summary>
         [HarmonyPostfix]
         private static void Postfix()
         {
             if (!Plugin.connection.connected) return;
-            if (!PhotonNetwork.IsMasterClient) return;
 
+            // ── Guest path: request label sync if shop is already stocked ─────────
+            // A late-joining guest will have missed the RPCA_SyncArchipelagoLabels RPC
+            // that the master sent when it first stocked the shop.  Detect this by
+            // checking whether any slot is already loaded, then ask master to resend.
+            if (!PhotonNetwork.IsMasterClient)
+            {
+                var hatShopTypeG  = AccessTools.TypeByName("HatShop");
+                var instanceFldG  = hatShopTypeG != null ? AccessTools.Field(hatShopTypeG, "instance") : null;
+                var hatShopInstG  = instanceFldG?.GetValue(null);
+
+                if (hatShopInstG != null)
+                {
+                    var hbiFldG  = AccessTools.Field(hatShopInstG.GetType(), "hatBuyInteractables");
+                    var slotsG   = hbiFldG?.GetValue(hatShopInstG) as List<HatBuyInteractable>;
+
+                    bool shopIsStocked = slotsG != null && slotsG.Any(s => s != null && !s.IsEmpty);
+                    if (shopIsStocked)
+                    {
+                        // Retrieve the HatShop's PhotonView to send the request RPC.
+                        var viewFldG   = AccessTools.Field(hatShopInstG.GetType(), "view");
+                        var photonViewG = viewFldG?.GetValue(hatShopInstG) as PhotonView;
+
+                        if (photonViewG != null)
+                        {
+                            Plugin.Logger.LogInfo(
+                                "[SurfaceReadyHatStockPatch] Guest detected stocked shop — " +
+                                "requesting AP label sync from master client.");
+                            photonViewG.RPC("RPCM_RequestLabelSync", RpcTarget.MasterClient);
+                        }
+                        else
+                        {
+                            Plugin.Logger.LogWarning(
+                                "[SurfaceReadyHatStockPatch] Guest: HatShop PhotonView is null — " +
+                                "cannot request label sync.");
+                        }
+                    }
+                }
+                return; // guests do not re-stock the shop
+            }
+
+            // ── Master path: re-stock with in-game day seed ───────────────────────
             // RoomStats should be set by now, but guard defensively.
             if (SurfaceNetworkHandler.RoomStats == null)
             {
@@ -575,7 +619,7 @@ namespace ContentWarningArchipelago.Patches
         /// <c>RPCA_SyncArchipelagoLabels</c>.  The RPC handler on each client applies
         /// the labels to the shop UI and populates <see cref="ScoutedNames"/>.
         /// </summary>
-        private static async Task UpdateHatLabelsAsync(
+        internal static async Task UpdateHatLabelsAsync(
             List<HatBuyInteractable> slots,
             object hatShopInstance)
         {
@@ -720,6 +764,48 @@ namespace ContentWarningArchipelago.Patches
         private void OnDestroy()
         {
             if (Instance == this) Instance = null;
+        }
+
+        /// <summary>
+        /// Called on the <b>master client only</b> (targeted with
+        /// <c>RpcTarget.MasterClient</c>) when a guest detects that the shop is
+        /// already stocked and they missed the original label broadcast.
+        ///
+        /// Re-runs <see cref="HatShopRestockLabelPatch.UpdateHatLabelsAsync"/> so
+        /// the master rescouts and re-broadcasts <c>RPCA_SyncArchipelagoLabels</c>
+        /// to all clients, giving the late-joining guest correct AP item names.
+        /// </summary>
+        [PunRPC]
+        public void RPCM_RequestLabelSync()
+        {
+            if (!PhotonNetwork.IsMasterClient) return; // safety guard
+            if (Plugin.connection.session == null) return;
+
+            Plugin.Logger.LogInfo(
+                "[HatShopAPSyncBehaviour] RPCM_RequestLabelSync received — " +
+                "re-broadcasting AP labels to all clients.");
+
+            // Re-resolve the current shop state and broadcast labels.
+            var hatShopType   = AccessTools.TypeByName("HatShop");
+            var instanceField = hatShopType != null ? AccessTools.Field(hatShopType, "instance") : null;
+            var hatShopInst   = instanceField?.GetValue(null);
+            if (hatShopInst == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[HatShopAPSyncBehaviour] RPCM_RequestLabelSync: HatShop.instance is null.");
+                return;
+            }
+
+            var hbiField = AccessTools.Field(hatShopInst.GetType(), "hatBuyInteractables");
+            var slots    = hbiField?.GetValue(hatShopInst) as List<HatBuyInteractable>;
+            if (slots == null || slots.Count == 0)
+            {
+                Plugin.Logger.LogWarning(
+                    "[HatShopAPSyncBehaviour] RPCM_RequestLabelSync: hatBuyInteractables is null or empty.");
+                return;
+            }
+
+            _ = HatShopRestockLabelPatch.UpdateHatLabelsAsync(slots, hatShopInst);
         }
 
         /// <summary>

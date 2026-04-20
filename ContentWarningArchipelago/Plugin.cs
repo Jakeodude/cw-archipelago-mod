@@ -53,10 +53,20 @@ namespace ContentWarningArchipelago
         /// </summary>
         internal const byte APLocationFoundEventCode = 73;
 
+        // ------------------------------------------------------------------ static instance
+
+        /// <summary>
+        /// Static reference to the plugin MonoBehaviour.
+        /// Used by static helpers (e.g. <see cref="Patches.TrapHandler"/>) that need to
+        /// start Unity coroutines without holding a MonoBehaviour reference themselves.
+        /// </summary>
+        public static Plugin Instance { get; private set; } = null!;
+
         // ------------------------------------------------------------------ Unity lifecycle
 
         private void Awake()
         {
+            Instance = this;
             Logger = base.Logger;
             Logger.LogInfo($"[CWArch] {MyPluginInfo.PLUGIN_GUID} v{MyPluginInfo.PLUGIN_VERSION} loading…");
 

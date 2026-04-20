@@ -21,11 +21,14 @@
 // ProgressionStatsPatch static helpers so the buff takes effect mid-game
 // without requiring a day restart.
 
+using System;
 using System.Collections.Generic;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Patches;
 using ContentWarningArchipelago.UI;
 using Photon.Pun;
+using UnityEngine;
+using Zorro.Core;
 
 namespace ContentWarningArchipelago.Data
 {
@@ -215,15 +218,21 @@ namespace ContentWarningArchipelago.Data
                 }
 
                 // ==============================================================
-                // SAFETY GEAR UNLOCKS
-                // Mark unlocked; a future ShopPatch can hide/show items based
-                // on these flags.  Notification shown immediately.
+                // SAFETY GEAR UNLOCKS — lobby items
+                // 1. Persist the unlock flag (read by ShopPatch / gate logic).
+                // 2. Physically spawn the item in the lobby using
+                //    PickupHandler.CreatePickup, which calls
+                //    PhotonNetwork.InstantiateRoomObject("PickupHolder", ...).
+                //    That creates a room-owned object (master-client authority)
+                //    with a proper PhotonView, preventing desyncs.
+                //    Only the master client may call CreatePickup; non-master
+                //    clients rely on Photon's object-sync to see the pickup.
                 // ==============================================================
                 case ItemNames.RescueHook:
                 {
                     APSave.saveData.rescueHookUnlocked = true;
                     APSave.Flush();
-                    APNotificationUI.ShowItemReceived(name, senderName);
+                    SpawnLobbyItem("Rescue Hook", name, senderName);
                     Plugin.Logger.LogInfo("[ItemData] Rescue Hook unlocked.");
                     break;
                 }
@@ -231,7 +240,7 @@ namespace ContentWarningArchipelago.Data
                 {
                     APSave.saveData.shockStickUnlocked = true;
                     APSave.Flush();
-                    APNotificationUI.ShowItemReceived(name, senderName);
+                    SpawnLobbyItem("Shock Stick", name, senderName);
                     Plugin.Logger.LogInfo("[ItemData] Shock Stick unlocked.");
                     break;
                 }
@@ -239,7 +248,7 @@ namespace ContentWarningArchipelago.Data
                 {
                     APSave.saveData.defibrillatorUnlocked = true;
                     APSave.Flush();
-                    APNotificationUI.ShowItemReceived(name, senderName);
+                    SpawnLobbyItem("Defibrillator", name, senderName);
                     Plugin.Logger.LogInfo("[ItemData] Defibrillator unlocked.");
                     break;
                 }
@@ -365,6 +374,87 @@ namespace ContentWarningArchipelago.Data
                 APNotificationUI.ShowMoneyReceived("AP Meta Coins", amount,
                     MoneyCellUI.MoneyCellType.MetaCoins);
             }
+        }
+
+        /// <summary>
+        /// Physically spawns a lobby (surface-scene) item as a networked pickup.
+        /// <para>
+        /// Uses <c>PickupHandler.CreatePickup</c> which internally calls
+        /// <c>PhotonNetwork.InstantiateRoomObject("PickupHolder", ...)</c>.
+        /// Room objects are owned by the master client and carry a <c>PhotonView</c>,
+        /// so all connected clients see the same object without desync.
+        /// </para>
+        /// <para>
+        /// Only the master client actually instantiates the object; non-master
+        /// clients receive the pickup via Photon's normal object-sync.
+        /// The HUD notification is shown on every client regardless.
+        /// </para>
+        /// </summary>
+        /// <param name="gameDisplayName">
+        /// The <c>Item.displayName</c> string exactly as it appears in the game's
+        /// <c>ItemDatabase</c> (e.g. "Rescue Hook", "Shock Stick", "Defibrillator").
+        /// </param>
+        /// <param name="apItemName">The AP item name shown in the HUD notification.</param>
+        /// <param name="senderName">The AP slot name of the sending player (empty = self).</param>
+        private static void SpawnLobbyItem(string gameDisplayName, string apItemName, string senderName)
+        {
+            // Always show the HUD notification on every client.
+            APNotificationUI.ShowItemReceived(apItemName, senderName);
+
+            // Only the master client may call PickupHandler.CreatePickup.
+            // (CreatePickup already guards this internally, but we skip the
+            // lookup cost entirely for non-master clients.)
+            if (!PhotonNetwork.IsMasterClient)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[ItemData] SpawnLobbyItem '{gameDisplayName}': not master client — " +
+                    "pickup will be created by host and synced via Photon.");
+                return;
+            }
+
+            // Locate the item in the game's runtime ItemDatabase by display name.
+            Item foundItem = null;
+            foreach (Item item in SingletonAsset<ItemDatabase>.Instance.Objects)
+            {
+                if (string.Equals(item.displayName, gameDisplayName, System.StringComparison.OrdinalIgnoreCase))
+                {
+                    foundItem = item;
+                    break;
+                }
+            }
+
+            if (foundItem == null)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[ItemData] SpawnLobbyItem: item '{gameDisplayName}' not found in ItemDatabase — " +
+                    "cannot spawn pickup. Check that the display name matches exactly.");
+                return;
+            }
+
+            // Spawn near the local player (who is the master client in the lobby).
+            // If for some reason localPlayer is null, fall back to world origin + up.
+            Vector3 spawnPos = (object)Player.localPlayer != null
+                ? Player.localPlayer.transform.position + Vector3.up
+                : Vector3.up * 2f;
+
+            // PickupHandler.CreatePickup calls:
+            //   PhotonNetwork.InstantiateRoomObject("PickupHolder", pos, rot, 0)
+            // which creates a room-owned GameObject with a PhotonView, then fires
+            // RPC_ConfigurePickup(AllBuffered) so every client initialises the item.
+            Pickup pickup = PickupHandler.CreatePickup(
+                foundItem.id,
+                new ItemInstanceData(Guid.NewGuid()),
+                spawnPos,
+                Quaternion.identity);
+
+            if (pickup != null)
+                Plugin.Logger.LogInfo(
+                    $"[ItemData] SpawnLobbyItem: spawned '{gameDisplayName}' (id={foundItem.id}) " +
+                    $"at {spawnPos} with PhotonView {pickup.m_photonView?.ViewID}.");
+            else
+                Plugin.Logger.LogWarning(
+                    $"[ItemData] SpawnLobbyItem: PickupHandler.CreatePickup returned null " +
+                    $"for '{gameDisplayName}'.");
         }
     }
 }

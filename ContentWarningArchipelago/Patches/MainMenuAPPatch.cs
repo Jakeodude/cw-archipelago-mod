@@ -27,9 +27,17 @@
 //   This is a purely local Unity UI object.  It is never serialised or transmitted
 //   over Photon.  ConfigEntry.Value writes only to the local BepInEx .cfg file.
 //   Plugin.Connect() is a local async call with no Photon RPC involvement.
+//
+// Deferred injection:
+//   The panel is NOT injected immediately in Start().  Instead a coroutine waits
+//   until PhotonNetwork.InRoom is true before calling InjectPanel(), preventing
+//   interference with the initial voice-chat setup and door-sync RPCs that Photon
+//   dispatches as part of the room-join handshake.
 
+using System.Collections;
 using ContentWarningArchipelago.UI;
 using HarmonyLib;
+using Photon.Pun;
 using UnityEngine;
 
 namespace ContentWarningArchipelago.Patches
@@ -41,10 +49,48 @@ namespace ContentWarningArchipelago.Patches
 
         /// <summary>
         /// Runs after <c>MainMenuHandler.Start()</c> — once per main-menu load.
-        /// Creates the <see cref="APConnectionPanelUI"/> as a top-right overlay on
-        /// the main-menu canvas.
+        /// Defers the actual panel creation until <c>PhotonNetwork.InRoom</c> is
+        /// <c>true</c> so we don't interfere with the initial voice-chat connection
+        /// and door-sync RPCs that fire during the Photon room-join handshake.
         /// </summary>
         private static void Postfix(MainMenuHandler __instance)
+        {
+            Plugin.Instance.StartCoroutine(WaitForRoomThenInject(__instance));
+        }
+
+        // ================================================================== Coroutine
+
+        /// <summary>
+        /// Yields until the local client has joined a Photon room, then injects
+        /// the AP connection panel.  If <c>MainMenuHandler</c> is destroyed before
+        /// the room is joined (e.g. the player started a game), the coroutine exits
+        /// silently without injecting.
+        /// </summary>
+        private static IEnumerator WaitForRoomThenInject(MainMenuHandler instance)
+        {
+            // Wait until Photon room state is established so that the initial
+            // voice-chat setup and door-sync RPCs have already been dispatched.
+            yield return new WaitUntil(() => PhotonNetwork.InRoom);
+
+            // Guard: MainMenuHandler may have been destroyed if a scene transition
+            // happened while we were waiting (e.g. auto-joining a game in progress).
+            if (instance == null)
+            {
+                Plugin.Logger.LogDebug(
+                    "[MainMenuAPPatch] MainMenuHandler was destroyed before InRoom — skipping panel inject.");
+                yield break;
+            }
+
+            InjectPanel(instance);
+        }
+
+        // ================================================================== Panel creation
+
+        /// <summary>
+        /// Creates the <see cref="APConnectionPanelUI"/> as a top-right overlay on
+        /// the main-menu canvas.  Called only after <c>PhotonNetwork.InRoom</c> is true.
+        /// </summary>
+        private static void InjectPanel(MainMenuHandler instance)
         {
             try
             {
@@ -57,15 +103,15 @@ namespace ContentWarningArchipelago.Patches
                 }
 
                 Plugin.Logger.LogInfo(
-                    "[MainMenuAPPatch] MainMenuHandler.Start postfix fired — injecting AP panel.");
+                    "[MainMenuAPPatch] PhotonNetwork.InRoom confirmed — injecting AP panel.");
 
                 // ---- Locate the root Canvas ----
                 // UIHandler is a public field on MainMenuHandler.  Walk up its
                 // hierarchy to find the nearest Canvas (usually the root).
                 Canvas? canvas = null;
 
-                if (__instance.UIHandler != null)
-                    canvas = __instance.UIHandler.GetComponentInParent<Canvas>();
+                if (instance.UIHandler != null)
+                    canvas = instance.UIHandler.GetComponentInParent<Canvas>();
 
                 // Fallback: search the whole scene for any active canvas.
                 if (canvas == null)
