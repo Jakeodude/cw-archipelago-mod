@@ -1,14 +1,18 @@
 // Patches/MainMenuAPPatch.cs
 // Injects the Archipelago connection panel into the in-game Escape Menu by
-// locating UI_EscapeMenu once the local client has joined a Photon room.
+// locating UI_EscapeMenu once the local Player object has awoken.
 //
 // Strategy:
-//   This patch no longer hooks MainMenuHandler.Start.  Instead, Plugin.Start()
-//   calls MainMenuAPPatch.TryInject() which launches a coroutine that waits
-//   until PhotonNetwork.InRoom before searching for UI_EscapeMenu in the loaded
-//   SurfaceScene.  This avoids any interference with the initial voice-chat
-//   setup and door-sync RPCs that Photon dispatches during the room-join
-//   handshake.
+//   A [HarmonyPatch(typeof(Player), "Awake")] Postfix fires after the game's
+//   own Player.Awake() body has run — meaning Photon voice initialisation and
+//   all room-join RPCs are already complete.  We check __instance.IsLocal so
+//   the injection only happens once (for the owning client) and is silently
+//   skipped for every remote player object that Photon spawns.
+//
+//   Because Player is spawned into the SurfaceScene, UI_EscapeMenu is already
+//   present in the hierarchy by the time this postfix fires, so
+//   GameObject.Find("UI_EscapeMenu") succeeds immediately with no polling or
+//   coroutine needed.
 //
 // Placement:
 //   The panel is parented to the first matching child of UI_EscapeMenu —
@@ -22,8 +26,8 @@
 //   including UI_EscapeMenu and our panel — automatically.  No explicit
 //   cleanup is required.
 //
-//   A name-based duplicate guard prevents double-injection if InjectPanel is
-//   somehow called more than once.
+//   A name-based duplicate guard prevents double-injection if the postfix is
+//   somehow called more than once per session.
 //
 // Multiplayer safety:
 //   This is a purely local Unity UI object.  It is never serialised or
@@ -31,80 +35,46 @@
 //   BepInEx .cfg file.  Plugin.Connect() is a local async call with no
 //   Photon RPC involvement.
 
-using System.Collections;
 using ContentWarningArchipelago.UI;
-using Photon.Pun;
+using HarmonyLib;
 using UnityEngine;
 
 namespace ContentWarningArchipelago.Patches
 {
-    // NOTE: No [HarmonyPatch] attribute — this class is no longer a Harmony
-    // postfix on MainMenuHandler.Start.  Plugin.Start() calls TryInject()
-    // directly to launch the deferred-injection coroutine.
+    /// <summary>
+    /// Harmony postfix on <c>Player.Awake</c>.
+    /// Injects the AP connection panel into <c>UI_EscapeMenu</c> exactly once,
+    /// immediately after the local player object has finished its own Awake
+    /// (which includes voice-chat initialisation).
+    /// </summary>
+    [HarmonyPatch(typeof(Player), "Awake")]
     internal static class MainMenuAPPatch
     {
-        // ================================================================== Entry point
+        // ================================================================== Harmony postfix
 
         /// <summary>
-        /// Called once from <see cref="Plugin.Start"/> to kick off the deferred
-        /// injection coroutine.
+        /// Runs after <c>Player.Awake()</c> on every spawned Player instance.
+        /// The <c>IsLocal</c> guard ensures we only inject for the owning client.
         /// </summary>
-        internal static void TryInject()
+        // ReSharper disable once InconsistentNaming
+        private static void Postfix(Player __instance)
         {
-            Plugin.Instance.StartCoroutine(WaitForRoomThenInject());
-        }
-
-        // ================================================================== Coroutine
-
-        /// <summary>
-        /// Yields until the local client has joined a Photon room, then injects
-        /// the AP connection panel into <c>UI_EscapeMenu</c>.
-        /// Retries up to 5 times (2 s apart) if the menu object is not yet ready.
-        /// </summary>
-        private static IEnumerator WaitForRoomThenInject()
-        {
-            // Wait until Photon room state is established so that the initial
-            // voice-chat setup and door-sync RPCs have already been dispatched.
-            yield return new WaitUntil(() => PhotonNetwork.InRoom);
-
-            // Extra delay: give the SurfaceScene (house geometry, voice handlers,
-            // and UI hierarchy) time to finish spawning before we touch the UI.
-            yield return new WaitForSeconds(5f);
+            if (!__instance.IsLocal) return;
 
             Plugin.Logger.LogDebug(
-                "[MainMenuAPPatch] PhotonNetwork.InRoom confirmed — beginning panel inject.");
+                "[MainMenuAPPatch] Local Player.Awake() completed — injecting AP panel.");
 
-            // Retry loop: UI_EscapeMenu may still not be present immediately after
-            // the 5 s buffer if the scene is loading slowly.
-            const int maxAttempts = 5;
-            for (int attempt = 1; attempt <= maxAttempts; attempt++)
-            {
-                if (InjectPanel())
-                    yield break;   // success (or duplicate guard already fired)
-
-                Plugin.Logger.LogWarning(
-                    $"[MainMenuAPPatch] Inject attempt {attempt}/{maxAttempts} failed. " +
-                    "Retrying in 2 s…");
-                yield return new WaitForSeconds(2f);
-            }
-
-            Plugin.Logger.LogError(
-                "[MainMenuAPPatch] All injection attempts exhausted. " +
-                "UI_EscapeMenu was never found — AP panel will not be available this session.");
+            InjectPanel();
         }
 
         // ================================================================== Panel creation
 
         /// <summary>
         /// Creates the <see cref="APConnectionPanelUI"/> inside <c>UI_EscapeMenu</c>.
-        /// Called only after <c>PhotonNetwork.InRoom</c> is <c>true</c>.
+        /// Called only from the <c>Player.Awake</c> postfix after the local player
+        /// object (and its voice-chat handlers) have finished initialising.
         /// </summary>
-        /// <returns>
-        /// <c>true</c> when injection succeeded (or the panel already existed);
-        /// <c>false</c> when <c>UI_EscapeMenu</c> was not yet present in the scene
-        /// (caller should retry).
-        /// </returns>
-        private static bool InjectPanel()
+        private static void InjectPanel()
         {
             try
             {
@@ -113,19 +83,22 @@ namespace ContentWarningArchipelago.Patches
                 {
                     Plugin.Logger.LogDebug(
                         "[MainMenuAPPatch] AP_ConnectionPanel already exists — skipping.");
-                    return true;   // already done; tell the caller not to retry
+                    return;
                 }
 
                 Plugin.Logger.LogInfo(
                     "[MainMenuAPPatch] Injecting AP panel into UI_EscapeMenu.");
 
                 // ---- Locate UI_EscapeMenu ----
+                // By the time Player.Awake() fires, SurfaceScene is fully loaded and
+                // UI_EscapeMenu is present in the hierarchy.
                 var escapeMenuGO = GameObject.Find("UI_EscapeMenu");
                 if (escapeMenuGO == null)
                 {
-                    Plugin.Logger.LogWarning(
-                        "[MainMenuAPPatch] UI_EscapeMenu not found yet — will retry.");
-                    return false;   // signal the retry loop to wait and try again
+                    Plugin.Logger.LogError(
+                        "[MainMenuAPPatch] Could not find UI_EscapeMenu in the scene. " +
+                        "AP panel will not be injected.");
+                    return;
                 }
 
                 // ---- Resolve parent: General > Pause > root ----
@@ -188,13 +161,11 @@ namespace ContentWarningArchipelago.Patches
 
                 Plugin.Logger.LogInfo(
                     "[MainMenuAPPatch] AP connection panel successfully injected into UI_EscapeMenu.");
-                return true;
             }
             catch (System.Exception ex)
             {
                 Plugin.Logger.LogError(
                     $"[MainMenuAPPatch] Exception while injecting AP panel: {ex}");
-                return false;   // treat exceptions as transient failures; allow retry
             }
         }
 
