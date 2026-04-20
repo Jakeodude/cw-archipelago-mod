@@ -79,8 +79,9 @@ namespace ContentWarningArchipelago
             LocationData.Init();
 
             // Apply all Harmony patches declared in this assembly.
-            // MainMenuAPPatch uses [HarmonyPatch(typeof(MainMenuHandler), "Start")] so
-            // PatchAll() picks it up automatically — no manual registration needed.
+            // NOTE: MainMenuAPPatch no longer uses a [HarmonyPatch] attribute and is
+            // therefore NOT picked up by PatchAll() — it is started manually from
+            // Plugin.Start() via MainMenuAPPatch.TryInject().
             var harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             harmony.PatchAll();
 
@@ -91,6 +92,11 @@ namespace ContentWarningArchipelago
         {
             connection = new ArchipelagoClient();
             Logger.LogInfo("[CWArch] ArchipelagoClient created. Waiting for connection.");
+
+            // Kick off the deferred AP-panel injection coroutine.  The coroutine
+            // waits until PhotonNetwork.InRoom is true, then locates UI_EscapeMenu
+            // in the loaded SurfaceScene and parents the AP connection panel to it.
+            Patches.MainMenuAPPatch.TryInject();
         }
 
         // ------------------------------------------------------------------ Frame tick
