@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Archipelago Randomizer for Content Warning")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("0.1.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+7ea40fcedf542d8572cbf36fcdc2537841016191")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("0.1.0+b311e2fcb797d0f172ac85a3e4d3616017a60579")]
 [assembly: System.Reflection.AssemblyProductAttribute("Content Warning Archipelago")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ContentWarningArchipelago")]
 [assembly: System.Reflection.AssemblyVersionAttribute("0.1.0.0")]

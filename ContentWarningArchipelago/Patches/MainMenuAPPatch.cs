@@ -59,6 +59,7 @@ namespace ContentWarningArchipelago.Patches
         /// <summary>
         /// Yields until the local client has joined a Photon room, then injects
         /// the AP connection panel into <c>UI_EscapeMenu</c>.
+        /// Retries up to 5 times (2 s apart) if the menu object is not yet ready.
         /// </summary>
         private static IEnumerator WaitForRoomThenInject()
         {
@@ -66,10 +67,30 @@ namespace ContentWarningArchipelago.Patches
             // voice-chat setup and door-sync RPCs have already been dispatched.
             yield return new WaitUntil(() => PhotonNetwork.InRoom);
 
+            // Extra delay: give the SurfaceScene (house geometry, voice handlers,
+            // and UI hierarchy) time to finish spawning before we touch the UI.
+            yield return new WaitForSeconds(5f);
+
             Plugin.Logger.LogDebug(
                 "[MainMenuAPPatch] PhotonNetwork.InRoom confirmed — beginning panel inject.");
 
-            InjectPanel();
+            // Retry loop: UI_EscapeMenu may still not be present immediately after
+            // the 5 s buffer if the scene is loading slowly.
+            const int maxAttempts = 5;
+            for (int attempt = 1; attempt <= maxAttempts; attempt++)
+            {
+                if (InjectPanel())
+                    yield break;   // success (or duplicate guard already fired)
+
+                Plugin.Logger.LogWarning(
+                    $"[MainMenuAPPatch] Inject attempt {attempt}/{maxAttempts} failed. " +
+                    "Retrying in 2 s…");
+                yield return new WaitForSeconds(2f);
+            }
+
+            Plugin.Logger.LogError(
+                "[MainMenuAPPatch] All injection attempts exhausted. " +
+                "UI_EscapeMenu was never found — AP panel will not be available this session.");
         }
 
         // ================================================================== Panel creation
@@ -78,7 +99,12 @@ namespace ContentWarningArchipelago.Patches
         /// Creates the <see cref="APConnectionPanelUI"/> inside <c>UI_EscapeMenu</c>.
         /// Called only after <c>PhotonNetwork.InRoom</c> is <c>true</c>.
         /// </summary>
-        private static void InjectPanel()
+        /// <returns>
+        /// <c>true</c> when injection succeeded (or the panel already existed);
+        /// <c>false</c> when <c>UI_EscapeMenu</c> was not yet present in the scene
+        /// (caller should retry).
+        /// </returns>
+        private static bool InjectPanel()
         {
             try
             {
@@ -87,7 +113,7 @@ namespace ContentWarningArchipelago.Patches
                 {
                     Plugin.Logger.LogDebug(
                         "[MainMenuAPPatch] AP_ConnectionPanel already exists — skipping.");
-                    return;
+                    return true;   // already done; tell the caller not to retry
                 }
 
                 Plugin.Logger.LogInfo(
@@ -97,10 +123,9 @@ namespace ContentWarningArchipelago.Patches
                 var escapeMenuGO = GameObject.Find("UI_EscapeMenu");
                 if (escapeMenuGO == null)
                 {
-                    Plugin.Logger.LogError(
-                        "[MainMenuAPPatch] Could not find UI_EscapeMenu in the scene. " +
-                        "AP panel will not be injected.");
-                    return;
+                    Plugin.Logger.LogWarning(
+                        "[MainMenuAPPatch] UI_EscapeMenu not found yet — will retry.");
+                    return false;   // signal the retry loop to wait and try again
                 }
 
                 // ---- Resolve parent: General > Pause > root ----
@@ -137,8 +162,23 @@ namespace ContentWarningArchipelago.Patches
                 // APConnectionPanelUI.Awake() builds all child UI programmatically.
                 panelGO.AddComponent<APConnectionPanelUI>();
 
-                // ---- Activate ----
+                // ---- Activate panel and ensure every ancestor is also active ----
+                // If any parent in the hierarchy is inactive the panel will be
+                // invisible even though panelGO itself is enabled.  Walk the chain
+                // upward and activate any disabled ancestor so the panel is
+                // immediately visible when the player opens the Escape menu.
                 panelGO.SetActive(true);
+                Transform ancestor = parentTransform;
+                while (ancestor != null)
+                {
+                    if (!ancestor.gameObject.activeSelf)
+                    {
+                        Plugin.Logger.LogDebug(
+                            $"[MainMenuAPPatch] Activating inactive ancestor: {GetPath(ancestor)}");
+                        ancestor.gameObject.SetActive(true);
+                    }
+                    ancestor = ancestor.parent;
+                }
 
                 // ---- Layer: before Quit Game buttons ----
                 // SetAsFirstSibling places the panel at sibling-index 0 within the
@@ -148,11 +188,13 @@ namespace ContentWarningArchipelago.Patches
 
                 Plugin.Logger.LogInfo(
                     "[MainMenuAPPatch] AP connection panel successfully injected into UI_EscapeMenu.");
+                return true;
             }
             catch (System.Exception ex)
             {
                 Plugin.Logger.LogError(
                     $"[MainMenuAPPatch] Exception while injecting AP panel: {ex}");
+                return false;   // treat exceptions as transient failures; allow retry
             }
         }
 
