@@ -21,6 +21,7 @@
 // player's own APSaveData and is correctly replayed when they reconnect to the
 // AP server — this patch handles only the SHARED / WORLD-STATE unlocks.
 
+using System.Collections.Generic;
 using ContentWarningArchipelago.Core;
 using ExitGames.Client.Photon;
 using HarmonyLib;
@@ -61,10 +62,108 @@ namespace ContentWarningArchipelago.Patches
 
             if (!Plugin.connection.connected) return;
 
+            var photonPlayer = player.refs.view.Controller;
             Plugin.Logger.LogInfo(
-                $"[LateJoinSync] New player '{player.refs.view.Controller.NickName}' joined — broadcasting AP world state.");
+                $"[LateJoinSync] New player '{photonPlayer.NickName}' joined — broadcasting AP world state.");
 
             BroadcastWorldState();
+
+            // Immediately push the current hat shop labels directly to the
+            // joining player so they see AP item names without waiting for an
+            // async re-scout cycle.  This resolves the "missing shop labels on
+            // first load" issue for late joiners.
+            SyncHatLabelsToPlayer(photonPlayer);
+        }
+
+        // ---- Targeted hat-shop label sync for a specific joining player --------
+
+        /// <summary>
+        /// Sends the currently cached AP item labels directly to a specific
+        /// joining player using a targeted Photon RPC.
+        ///
+        /// <para>
+        /// Reads the cached <see cref="HatShopRestockLabelPatch.ScoutedNames"/>
+        /// dictionary (populated during the last master-client scout) and builds
+        /// the same <c>string[]</c> used by <c>RPCA_SyncArchipelagoLabels</c>,
+        /// then fires it targeted to <paramref name="photonPlayer"/> only so
+        /// existing clients are not needlessly updated.
+        /// </para>
+        ///
+        /// <para>
+        /// Falls back gracefully if <c>HatShopAPSyncBehaviour.Instance</c> is
+        /// null (shop not yet stocked) or if the HatShop's PhotonView cannot be
+        /// resolved — in those cases the guest's existing
+        /// <c>RPCM_RequestLabelSync</c> request pathway handles the sync instead.
+        /// </para>
+        /// </summary>
+        private static void SyncHatLabelsToPlayer(Photon.Realtime.Player photonPlayer)
+        {
+            try
+            {
+                // HatShopAPSyncBehaviour.Instance is set when the shop has been
+                // stocked at least once this session.
+                if (HatShopAPSyncBehaviour.Instance == null)
+                {
+                    Plugin.Logger.LogDebug(
+                        "[LateJoinSync] SyncHatLabelsToPlayer: HatShopAPSyncBehaviour not ready — skipping targeted sync.");
+                    return;
+                }
+
+                // Locate HatShop instance to get the slot count and PhotonView.
+                var hatShopType   = AccessTools.TypeByName("HatShop");
+                var instanceField = hatShopType != null ? AccessTools.Field(hatShopType, "instance") : null;
+                var hatShopInst   = instanceField?.GetValue(null);
+
+                if (hatShopInst == null)
+                {
+                    Plugin.Logger.LogDebug(
+                        "[LateJoinSync] SyncHatLabelsToPlayer: HatShop.instance is null — skipping targeted sync.");
+                    return;
+                }
+
+                var hbiField = AccessTools.Field(hatShopInst.GetType(), "hatBuyInteractables");
+                var slots    = hbiField?.GetValue(hatShopInst) as List<HatBuyInteractable>;
+
+                if (slots == null || slots.Count == 0)
+                {
+                    Plugin.Logger.LogDebug(
+                        "[LateJoinSync] SyncHatLabelsToPlayer: hatBuyInteractables empty — skipping targeted sync.");
+                    return;
+                }
+
+                // Build the labels array from the cached ScoutedNames dictionary.
+                var labels = new string[slots.Count];
+                for (int i = 0; i < slots.Count; i++)
+                {
+                    var hbi = slots[i];
+                    labels[i] = (hbi != null &&
+                                 HatShopRestockLabelPatch.ScoutedNames.TryGetValue(hbi, out string name))
+                        ? name
+                        : string.Empty;
+                }
+
+                // Resolve the HatShop's PhotonView for the RPC call.
+                var viewField  = AccessTools.Field(hatShopInst.GetType(), "view");
+                var photonView = viewField?.GetValue(hatShopInst) as PhotonView;
+
+                if (photonView == null)
+                {
+                    Plugin.Logger.LogWarning(
+                        "[LateJoinSync] SyncHatLabelsToPlayer: HatShop PhotonView is null — cannot send targeted label sync.");
+                    return;
+                }
+
+                // Send labels targeted to this player only.
+                photonView.RPC("RPCA_SyncArchipelagoLabels", photonPlayer, (object)labels);
+
+                Plugin.Logger.LogInfo(
+                    $"[LateJoinSync] Sent {labels.Length} hat label(s) directly to '{photonPlayer.NickName}'.");
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[LateJoinSync] SyncHatLabelsToPlayer exception: {ex.Message}");
+            }
         }
 
         // ---- Called whenever our own state changes (e.g., new item received) ---

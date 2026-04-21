@@ -43,23 +43,26 @@
 //
 //   a) Postfix — "Any Extraction" / "Extracted Footage on Day N"
 //      Fires the day-keyed extraction location checks.
+//      Guarded by IsMasterClient — only the host sends these checks and
+//      broadcasts RPC notifications to all clients.
 //
-//   b) FilmingPostfix — Filming detection (replaces ContentBufferGenerateCommentsPatch)
-//      Iterates ContentBuffer.buffer (List<BufferedContent>) and fires
-//      filming AP checks for every entity captured.
+//   b) FilmingPostfix — Filming detection
+//      Score multiplier (Progressive Views) runs on ALL clients.
+//      AP check firing is guarded to master client only; non-master clients
+//      receive popups via RPCA_BroadcastAPCheckNotification.
 //
-//      NOTE ON PREFIX VS POSTFIX:
-//      The task requests a "Prefix" here, but since `buffer` is an `out` parameter
-//      it is null before the method body runs.  Only a Postfix can access the
-//      populated ContentBuffer.  FilmingPostfix is therefore a [HarmonyPostfix].
+//   NOTE ON PREFIX VS POSTFIX:
+//   The task requests a "Prefix" here, but since `buffer` is an `out` parameter
+//   it is null before the method body runs.  Only a Postfix can access the
+//   populated ContentBuffer.  FilmingPostfix is therefore a [HarmonyPostfix].
 //
- //   Field chain confirmed from ContentBuffer.cs game reference:
- //     ContentBuffer.buffer           — List<BufferedContent>  (public field)
- //     BufferedContent.frame          — ContentEventFrame      (public field)
- //     ContentEventFrame.contentEvent — ContentEvent subclass  (public field)
- //     ArtifactContentEvent.artifact  — PropContent            (primary field; gives specific name e.g. 'Ribcage')
- //     ArtifactContentEvent.content   — PropContent            (fallback; gives generic name e.g. 'Bones')
- //     PropContent is a ScriptableObject; use Object.name for the asset name.
+//   Field chain confirmed from ContentBuffer.cs game reference:
+//     ContentBuffer.buffer           — List<BufferedContent>  (public field)
+//     BufferedContent.frame          — ContentEventFrame      (public field)
+//     ContentEventFrame.contentEvent — ContentEvent subclass  (public field)
+//     ArtifactContentEvent.artifact  — PropContent (primary field; specific name e.g. 'Ribcage')
+//     ArtifactContentEvent.content   — PropContent (fallback;  generic  name e.g. 'Bones')
+//     PropContent is a ScriptableObject; use Object.name for the asset name.
 //
 // NOTE: All patches use AccessTools string-based type/method resolution so they
 // gracefully no-op (log a warning) if the game renames a method, rather than
@@ -73,6 +76,7 @@ using System.Reflection;
 using HarmonyLib;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
+using ContentWarningArchipelago.UI;
 using Photon.Pun;
 using UnityEngine;
 
@@ -309,12 +313,19 @@ namespace ContentWarningArchipelago.Patches
         /// Postfix fires after <c>ContentEvaluator.EvaluateRecording</c> returns.
         /// <paramref name="__result"/> is <c>true</c> when evaluation succeeded.
         /// Fires extraction location checks only.
+        ///
+        /// Guarded by <c>IsMasterClient</c>: only the host sends AP checks and
+        /// broadcasts notifications to all clients via
+        /// <see cref="BroadcastAPCheckNotification"/>.  Non-master clients receive
+        /// the <c>RPCA_BroadcastAPCheckNotification</c> RPC and display the popup
+        /// there instead.
         /// </summary>
         [HarmonyPostfix]
         static void Postfix(bool __result)
         {
-            if (!__result) return;                    // evaluation failed / no content
+            if (!__result) return;                     // evaluation failed / no content
             if (!Plugin.connection.connected) return;
+            if (!PhotonNetwork.IsMasterClient) return; // only host sends checks + notifications
 
             try
             {
@@ -324,6 +335,7 @@ namespace ContentWarningArchipelago.Patches
                 {
                     Plugin.Logger.LogInfo("[ContentEvaluatorPatch] Sending check: Any Extraction");
                     Plugin.SendCheck(anyExtrId);
+                    BroadcastAPCheckNotification(LocationNames.AnyExtraction);
                 }
 
                 // ---- b) Extracted Footage on Day N ------------------------------------
@@ -336,6 +348,7 @@ namespace ContentWarningArchipelago.Patches
                     {
                         Plugin.Logger.LogInfo($"[ContentEvaluatorPatch] Day {day} extraction → sending check: {dayLocName}");
                         Plugin.SendCheck(dayLocId);
+                        BroadcastAPCheckNotification(dayLocName);
                     }
                 }
             }
@@ -348,9 +361,9 @@ namespace ContentWarningArchipelago.Patches
         // ------------------------------------------------------------------
         // Postfix B — Filming detection
         //
-        // NOTE: The task specifies a "Prefix" here, but ContentBuffer `buffer`
-        // is an `out` parameter — it is null before EvaluateRecording executes.
-        // This must be a Postfix so Harmony injects the populated buffer value.
+        // NOTE: The task specifies a "Prefix" here, but since `buffer` is an
+        // `out` parameter it is null before the method body runs.  Only a
+        // Postfix can access the populated ContentBuffer.
         //
         // Harmony injects the `out ContentBuffer buffer` value by matching the
         // parameter name "buffer" to the original method's parameter name.
@@ -359,14 +372,11 @@ namespace ContentWarningArchipelago.Patches
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// Second Postfix — fires filming AP checks for every entity captured on
-        /// camera.  Iterates <c>ContentBuffer.buffer</c> (List&lt;BufferedContent&gt;)
-        /// via reflection, extracts the content event from each frame, and calls
-        /// <see cref="TryFireEntityCheck"/> with a 3-level priority fallback.
+        /// Second Postfix — applies the Progressive Views score multiplier on
+        /// ALL clients, then fires filming AP checks on the master client only.
         ///
-        /// Also logs every <c>GetName()</c> and <c>GetID()</c> found in the buffer
-        /// so that artifacts like Skulls can be confirmed as correctly identified
-        /// by the engine.
+        /// Non-master clients (e.g. 'Reggi') receive filming check popups via
+        /// <c>RPCA_BroadcastAPCheckNotification</c> dispatched from the master.
         /// </summary>
         [HarmonyPostfix]
         static void FilmingPostfix(bool __result, object buffer)
@@ -382,6 +392,7 @@ namespace ContentWarningArchipelago.Patches
                 // BigNumbers.GetScoreToViews) boosts extracted-footage view counts only.
                 // The quota display (UI_Views) reads SurfaceNetworkHandler.RoomStats
                 // directly and is completely unaffected by changes to buffer scores.
+                // This runs on ALL clients because the buffer is local to each client.
                 int viewLevel = APSave.saveData.viewsMultiplierLevel;
                 if (viewLevel > 0)
                 {
@@ -404,7 +415,11 @@ namespace ContentWarningArchipelago.Patches
                     }
                 }
 
-                FireFilmingChecks(buffer);
+                // ── Filming checks — master client only ───────────────────────────────
+                // AP checks and notifications are authoritative on the host; non-master
+                // clients rely on RPCA_BroadcastAPCheckNotification for their popups.
+                if (PhotonNetwork.IsMasterClient)
+                    FireFilmingChecks(buffer);
             }
             catch (Exception ex)
             {
@@ -611,6 +626,8 @@ namespace ContentWarningArchipelago.Patches
         ///      already resolved above.
         ///
         /// Fires at most once per distinct location per <paramref name="fired"/> set.
+        /// After sending, broadcasts the check notification to all clients via
+        /// <see cref="BroadcastAPCheckNotification"/>.
         /// </summary>
         private static void TryFireEntityCheck(
             string rawName,
@@ -665,6 +682,62 @@ namespace ContentWarningArchipelago.Patches
 
             Plugin.Logger.LogInfo($"[ContentEvaluatorPatch] Filming check → {locationName}");
             Plugin.SendCheck(locId);
+
+            // Broadcast popup to all clients (non-master clients show it here;
+            // master already saw it from ActivateCheck's local ShowLocationFound).
+            BroadcastAPCheckNotification(locationName);
+        }
+
+        // ------------------------------------------------------------------
+        // Network notification helper
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Broadcasts an AP check notification to ALL connected clients via a
+        /// Photon RPC on <c>SurfaceNetworkHandler</c>'s PhotonView.
+        ///
+        /// <para>
+        /// Called on the <b>master client only</b> (guarded by the
+        /// <c>IsMasterClient</c> checks in <see cref="Postfix"/> and
+        /// <see cref="FilmingPostfix"/>).  The master already sees the notification
+        /// locally from <c>ActivateCheck → APNotificationUI.ShowLocationFound</c>;
+        /// the RPC receiver (<see cref="SurfaceAPNotificationBroadcaster"/>) skips
+        /// display on master so only non-master clients (e.g. 'Reggi') see the popup.
+        /// </para>
+        ///
+        /// <para>
+        /// A <see cref="SurfaceAPNotificationBroadcaster"/> component is lazily
+        /// added to <c>SurfaceNetworkHandler.Instance.gameObject</c> so that
+        /// Photon can dispatch the named RPC to a MonoBehaviour on the same
+        /// GameObject as the PhotonView.
+        /// </para>
+        /// </summary>
+        private static void BroadcastAPCheckNotification(string locationName)
+        {
+            if (string.IsNullOrEmpty(locationName)) return;
+
+            try
+            {
+                var surface = SurfaceNetworkHandler.Instance;
+                if (surface == null) return;
+
+                // Lazily attach the broadcaster so the RPC target MonoBehaviour exists.
+                if (surface.GetComponent<SurfaceAPNotificationBroadcaster>() == null)
+                    surface.gameObject.AddComponent<SurfaceAPNotificationBroadcaster>();
+
+                surface.photonView.RPC(
+                    "RPCA_BroadcastAPCheckNotification",
+                    RpcTarget.All,
+                    locationName);
+
+                Plugin.Logger.LogDebug(
+                    $"[ContentEvaluatorPatch] Broadcast AP notification RPC: '{locationName}'");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[ContentEvaluatorPatch] BroadcastAPCheckNotification failed: {ex.Message}");
+            }
         }
 
         // ------------------------------------------------------------------
@@ -719,6 +792,59 @@ namespace ContentWarningArchipelago.Patches
             }
 
             return 0;
+        }
+    }
+
+    // =========================================================================
+    // SurfaceAPNotificationBroadcaster
+    //
+    // A lightweight MonoBehaviour attached at runtime to SurfaceNetworkHandler's
+    // GameObject (which already owns the game's PhotonView for the surface scene).
+    // Photon dispatches a PhotonView RPC to every MonoBehaviour on the same
+    // GameObject, so attaching this component is sufficient for the master client
+    // to call:
+    //
+    //   SurfaceNetworkHandler.Instance.photonView.RPC(
+    //       "RPCA_BroadcastAPCheckNotification", RpcTarget.All, locName)
+    //
+    // and have it execute here on every connected client — including late joiners
+    // like 'Reggi' who would otherwise miss the notification because
+    // ContentEvaluator.EvaluateRecording only ran on the master's machine.
+    //
+    // The master client skips the popup in the RPC handler because ActivateCheck
+    // already displayed it locally; only non-master clients call ShowLocationFound.
+    // =========================================================================
+
+    /// <summary>
+    /// Receives the master client's AP check notification and displays the
+    /// "Location Found!" popup on every non-master Photon client.
+    /// </summary>
+    internal class SurfaceAPNotificationBroadcaster : MonoBehaviour
+    {
+        /// <summary>
+        /// Called on <b>all</b> clients (including the master) by the master
+        /// client after it has fired an AP location check during filming or
+        /// extraction evaluation.
+        ///
+        /// <para>
+        /// The master client already sees the notification from
+        /// <c>ActivateCheck → APNotificationUI.ShowLocationFound</c>, so this
+        /// method skips display if the receiver is the master.  Non-master
+        /// clients (e.g. 'Reggi') display the popup here.
+        /// </para>
+        /// </summary>
+        [PunRPC]
+        public void RPCA_BroadcastAPCheckNotification(string locationName)
+        {
+            if (string.IsNullOrEmpty(locationName)) return;
+
+            // Master already displayed the notification locally via ActivateCheck.
+            if (PhotonNetwork.IsMasterClient) return;
+
+            Plugin.Logger.LogInfo(
+                $"[SurfaceAPNotificationBroadcaster] Showing AP check notification: '{locationName}'");
+
+            APNotificationUI.ShowLocationFound(locationName);
         }
     }
 }

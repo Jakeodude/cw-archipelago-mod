@@ -30,6 +30,7 @@
 //   BepInEx .cfg file.  Plugin.Connect() is a local async call with no
 //   Photon RPC involvement.
 
+using System.Collections;
 using ContentWarningArchipelago.UI;
 using HarmonyLib;
 using UnityEngine;
@@ -57,9 +58,34 @@ namespace ContentWarningArchipelago.Patches
             if (GameObject.Find("AP_ConnectionPanel") != null) return;
 
             Plugin.Logger.LogDebug(
-                "[MainMenuAPPatch] MainMenuHandler.Start() completed — injecting AP panel.");
+                "[MainMenuAPPatch] MainMenuHandler.Start() completed — " +
+                "starting 3-second coroutine before injecting AP panel.");
 
-            InjectPanel(__instance);
+            // Delay injection by 3 seconds so that Photon Voice has fully
+            // initialised before we modify the scene hierarchy.  Injecting
+            // synchronously inside MainMenuHandler.Start() races with the
+            // Voice init and (a) silences audio and (b) leaves the
+            // ConnectionStateHandler state machine in a Busy-like state that
+            // prevents joining players from waking up / opening the house door.
+            __instance.StartCoroutine(InjectPanelDelayed(__instance));
+        }
+
+        // ================================================================== Coroutine
+
+        /// <summary>
+        /// Waits 3 seconds for Photon Voice to complete initialisation, then
+        /// injects the AP panel.  A duplicate guard is re-checked after the
+        /// wait in case another code path already injected the panel.
+        /// </summary>
+        private static IEnumerator InjectPanelDelayed(MainMenuHandler menu)
+        {
+            yield return new WaitForSeconds(3f);
+
+            // Re-check after the wait — another Start() call or a scene reload
+            // may have already injected the panel.
+            if (GameObject.Find("AP_ConnectionPanel") != null) yield break;
+
+            InjectPanel(menu);
         }
 
         // ================================================================== Panel creation
