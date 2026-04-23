@@ -132,14 +132,16 @@ namespace ContentWarningArchipelago.Patches
                 }
 
                 // Build the labels array from the cached ScoutedNames dictionary.
+                // Pre-declare 'name' so it is guaranteed to be assigned regardless
+                // of whether TryGetValue is reached in the short-circuit && below.
                 var labels = new string[slots.Count];
                 for (int i = 0; i < slots.Count; i++)
                 {
                     var hbi = slots[i];
-                    labels[i] = (hbi != null &&
-                                 HatShopRestockLabelPatch.ScoutedNames.TryGetValue(hbi, out string name))
-                        ? name
-                        : string.Empty;
+                    string name = string.Empty;
+                    if (hbi != null)
+                        HatShopRestockLabelPatch.ScoutedNames.TryGetValue(hbi, out name);
+                    labels[i] = name;
                 }
 
                 // Resolve the HatShop's PhotonView for the RPC call.

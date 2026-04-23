@@ -31,6 +31,51 @@ using UnityEngine;
 
 namespace ContentWarningArchipelago.Patches
 {
+    // =========================================================================
+    // Stubs — referenced by LateJoinSyncPatch for the planned hat label scouting
+    // system (which displays AP item names inside the hat shop and syncs them to
+    // late-joining clients).  The full implementation is not yet built; these
+    // stubs keep the project compiling in the meantime.
+    //
+    // Behaviour while stubs are active:
+    //   • HatShopAPSyncBehaviour.Instance is always null → SyncHatLabelsToPlayer
+    //     immediately early-returns (graceful no-op for late joiners).
+    //   • HatShopRestockLabelPatch.ScoutedNames is always empty → all label
+    //     lookups return string.Empty, leaving hat shop slot names unchanged.
+    // =========================================================================
+
+    /// <summary>
+    /// Singleton MonoBehaviour that will be attached to <c>HatShop.instance.gameObject</c>
+    /// once the hat label scouting system is implemented.
+    /// <para>
+    /// <see cref="Instance"/> remains <c>null</c> until the system is built, causing
+    /// <c>LateJoinSyncPatch.SyncHatLabelsToPlayer</c> to early-return harmlessly.
+    /// </para>
+    /// </summary>
+    internal class HatShopAPSyncBehaviour : MonoBehaviour
+    {
+        /// <summary>
+        /// Set by the scouting system once the shop has been stocked.
+        /// <c>null</c> until the label-scouting feature is fully implemented.
+        /// </summary>
+        internal static HatShopAPSyncBehaviour? Instance { get; private set; }
+    }
+
+    /// <summary>
+    /// Provides the <see cref="ScoutedNames"/> cache that maps each
+    /// <see cref="HatBuyInteractable"/> slot to the AP item name scouted for
+    /// that location.  Currently always empty (no-op stub).
+    /// </summary>
+    internal static class HatShopRestockLabelPatch
+    {
+        /// <summary>
+        /// Maps a hat shop slot → the AP item name placed at that location.
+        /// Populated when the full label-scouting system is implemented.
+        /// </summary>
+        internal static readonly Dictionary<HatBuyInteractable, string> ScoutedNames =
+            new Dictionary<HatBuyInteractable, string>();
+    }
+
     /// <summary>
     /// Harmony postfix on <c>HatShop.Restock()</c>.
     /// Replaces the vanilla random price with a fixed AP-stage price after the
