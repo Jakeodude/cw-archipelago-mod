@@ -122,9 +122,8 @@ namespace ContentWarningArchipelago.Patches
             { "Ancient Gestures 2", "Bought Ancient Gestures 2" },
             { "AncientGestures1",   "Bought Ancient Gestures 1" },
             { "Ancient Gestures 1", "Bought Ancient Gestures 1" },
-            // "Backflip" may appear as "Backflip", "BackFlip", or a suffixed asset name
+            // "Backflip" may appear as "Backflip" or a suffixed asset name
             { "Backflip",           "Bought Backflip" },
-            { "BackFlip",           "Bought Backflip" },
             { "Backflip_Emote",     "Bought Backflip" },
             { "Dance101",           "Bought Dance 101" },
             { "Dance 101",          "Bought Dance 101" },
