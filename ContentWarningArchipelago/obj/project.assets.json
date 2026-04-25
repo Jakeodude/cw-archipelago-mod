@@ -2922,11 +2922,11 @@
   "project": {
     "version": "0.1.0",
     "restore": {
-      "projectUniqueName": "c:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\ContentWarningArchipelago.csproj",
+      "projectUniqueName": "C:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\ContentWarningArchipelago.csproj",
       "projectName": "ContentWarningArchipelago",
-      "projectPath": "c:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\ContentWarningArchipelago.csproj",
+      "projectPath": "C:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\ContentWarningArchipelago.csproj",
       "packagesPath": "C:\\Users\\Jakeo\\.nuget\\packages\\",
-      "outputPath": "c:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\obj\\",
+      "outputPath": "C:\\Code\\cw-archipelago-mod\\ContentWarningArchipelago\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\Jakeo\\AppData\\Roaming\\NuGet\\NuGet.Config"
