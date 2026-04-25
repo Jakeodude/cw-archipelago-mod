@@ -113,6 +113,9 @@ namespace ContentWarningArchipelago.Core
                 if (slotData.TryGetValue("quota_count", out var qc))
                     APSave.saveData.quotaCount = Convert.ToInt32(qc);
 
+                if (slotData.TryGetValue("monster_tiers", out var mt))
+                    APSave.saveData.monsterTiersEnabled = Convert.ToBoolean(mt);
+
                 // ---- Resync items the server already sent while we were offline ----
                 _itemIndex = APSave.saveData.itemReceivedIndex;
 
@@ -328,5 +331,61 @@ namespace ContentWarningArchipelago.Core
 
         public string GetItemName(long id) =>
             session?.Items.GetItemName(id) ?? ItemData.GetName(id);
+
+        // ================================================================== SCOUTING
+
+        /// <summary>
+        /// Scouts the given location IDs on the AP server using
+        /// <c>HintCreationPolicy.None</c> (no hint-point cost) and returns a
+        /// dictionary mapping each location ID to the item name placed there.
+        ///
+        /// <para>
+        /// Used by <c>HatShopPatch</c> to show the AP item name behind each hat
+        /// in the shop UI.  Returns an empty dictionary if not connected, if all
+        /// IDs are invalid, or if the server call fails.
+        /// </para>
+        /// </summary>
+        public async Task<Dictionary<long, string>> ScoutLocationsAsync(IEnumerable<long> locationIds)
+        {
+            var result = new Dictionary<long, string>();
+
+            if (session == null || !connected)
+            {
+                Plugin.Logger.LogWarning("[AP] ScoutLocationsAsync called while disconnected.");
+                return result;
+            }
+
+            long[] ids = System.Linq.Enumerable.ToArray(locationIds);
+            if (ids.Length == 0) return result;
+
+            try
+            {
+                // Archipelago.MultiClient.Net v6 API:
+                // Task<Dictionary<long, ScoutedItemInfo>> ScoutLocationsAsync(
+                //     HintCreationPolicy policy, params long[] locationIds)
+                var scouted = await session.Locations.ScoutLocationsAsync(
+                    HintCreationPolicy.None, ids);
+
+                if (scouted == null) return result;
+
+                foreach (var kvp in scouted)
+                {
+                    long   locId    = kvp.Key;
+                    string itemName = kvp.Value.ItemName
+                                   ?? $"Item {kvp.Value.ItemId}";
+                    result[locId] = itemName;
+                }
+
+                Plugin.Logger.LogInfo(
+                    $"[AP] Scouted {result.Count}/{ids.Length} hat location(s).");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[AP] ScoutLocationsAsync failed: {ex.Message}");
+            }
+
+            return result;
+        }
     }
 }

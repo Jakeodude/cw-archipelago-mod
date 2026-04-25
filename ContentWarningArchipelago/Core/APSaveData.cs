@@ -94,6 +94,15 @@ namespace ContentWarningArchipelago.Core
         /// </summary>
         public int pendingMetaCoins = 0;
 
+        // ------------------------------------------------------------------ Monster / artifact tiers
+
+        /// <summary>
+        /// True when the AP world was generated with <c>monster_tiers</c> enabled.
+        /// Cached from slot data on connect; used by <c>ContentEvaluatorPatch</c> to
+        /// decide whether to attempt tier 2/3 filming checks.
+        /// </summary>
+        public bool monsterTiersEnabled = false;
+
         // ------------------------------------------------------------------ Hat shop (session-only)
 
         /// <summary>

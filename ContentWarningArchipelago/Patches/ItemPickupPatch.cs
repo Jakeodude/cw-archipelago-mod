@@ -88,6 +88,66 @@ namespace ContentWarningArchipelago.Patches
     [HarmonyPatch]
     public static class ShopBuyPatch
     {
+        // ── Explicit override map ────────────────────────────────────────────
+        // Maps a game-internal name (Unity asset name OR Item.displayName) to the
+        // correct AP location name for items whose auto-generated
+        // "Bought " + displayName does NOT match the location table.
+        //
+        // WHY NEEDED:
+        //   Some emote Items have an empty/null displayName and rely entirely on
+        //   the localization system (ShopItem.UpdateLocalizedName → LocalizationKeys).
+        //   When displayName is missing, TryGetItemDisplayName falls back to
+        //   UnityEngine.Object.name (the Unity asset name), which is typically
+        //   camelCase or spaceless (e.g. "AncientGestures3", "Dance101").
+        //   The auto-computed "Bought AncientGestures3" never matches the
+        //   location-table entry "Bought Ancient Gestures 3", so the check is lost.
+        //
+        // HOW IT IS USED (in Postfix):
+        //   1. Check override by assetName  (covers null-displayName items)
+        //   2. Check override by displayName (covers items with wrong displayName)
+        //   3. Auto-compute "Bought " + displayName  (normal path; most items)
+        //   4. Auto-compute "Bought " + assetName    (last-resort fallback)
+        //
+        // Keys are case-insensitive.  Both the spaceless Unity asset name AND the
+        // human-readable display name variant are registered so the lookup works
+        // regardless of what the game version actually stores in each field.
+        // ─────────────────────────────────────────────────────────────────────
+        private static readonly Dictionary<string, string> _shopNameOverrides =
+            new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // ── Emotes: numbered / multi-word names that may differ internally ──
+            { "AncientGestures3",   "Bought Ancient Gestures 3" },
+            { "Ancient Gestures 3", "Bought Ancient Gestures 3" },
+            { "AncientGestures2",   "Bought Ancient Gestures 2" },
+            { "Ancient Gestures 2", "Bought Ancient Gestures 2" },
+            { "AncientGestures1",   "Bought Ancient Gestures 1" },
+            { "Ancient Gestures 1", "Bought Ancient Gestures 1" },
+            // "Backflip" may appear as "Backflip", "BackFlip", or a suffixed asset name
+            { "Backflip",           "Bought Backflip" },
+            { "BackFlip",           "Bought Backflip" },
+            { "Backflip_Emote",     "Bought Backflip" },
+            { "Dance101",           "Bought Dance 101" },
+            { "Dance 101",          "Bought Dance 101" },
+            { "Dance102",           "Bought Dance 102" },
+            { "Dance 102",          "Bought Dance 102" },
+            { "Dance103",           "Bought Dance 103" },
+            { "Dance 103",          "Bought Dance 103" },
+            { "Workout1",           "Bought Workout 1" },
+            { "Workout 1",          "Bought Workout 1" },
+            { "Workout2",           "Bought Workout 2" },
+            { "Workout 2",          "Bought Workout 2" },
+            { "Thumbnail1",         "Bought Thumbnail 1" },
+            { "Thumbnail 1",        "Bought Thumbnail 1" },
+            { "Thumbnail2",         "Bought Thumbnail 2" },
+            { "Thumbnail 2",        "Bought Thumbnail 2" },
+            { "Gymnastics",         "Bought Gymnastics" },
+            { "Caring",             "Bought Caring" },
+            { "Yoga",               "Bought Yoga" },
+            // "Party Popper" works via displayName already, but add the spaceless
+            // form in case a game patch strips the displayName.
+            { "PartyPopper",        "Bought Party Popper" },
+        };
+
         static MethodBase? TargetMethod()
         {
             var type = AccessTools.TypeByName("ShopHandler");
@@ -114,6 +174,13 @@ namespace ContentWarningArchipelago.Patches
         /// Postfix fires on EVERY client (RpcTarget.All broadcast).
         /// We guard with IsMasterClient so only the host sends the AP check once.
         /// <paramref name="itemIDs"/> is the exact set of purchased item IDs.
+        ///
+        /// Location name resolution order for each purchased item:
+        ///   1. Override by assetName  — catches emotes with null/empty displayName whose
+        ///      Unity asset name differs from the AP location name (e.g. "AncientGestures3").
+        ///   2. Override by displayName — catches items whose displayName doesn't auto-match.
+        ///   3. Auto "Bought " + displayName — the normal path used by most shop items.
+        ///   4. Auto "Bought " + assetName  — last-resort fallback.
         /// </summary>
         [HarmonyPostfix]
         static void Postfix(object __instance, byte[] itemIDs)
@@ -127,22 +194,45 @@ namespace ContentWarningArchipelago.Patches
             {
                 foreach (byte itemId in itemIDs)
                 {
-                    string? displayName = TryGetItemDisplayName(itemId);
-                    if (string.IsNullOrEmpty(displayName))
+                    TryGetItemDisplayName(itemId, out string? displayName, out string? assetName);
+
+                    // ── Step 1: explicit override by asset name ────────────────────────
+                    string? locationName = null;
+                    if (!string.IsNullOrEmpty(assetName) &&
+                        _shopNameOverrides.TryGetValue(assetName, out string? ov1))
+                        locationName = ov1;
+
+                    // ── Step 2: explicit override by display name ──────────────────────
+                    if (locationName == null &&
+                        !string.IsNullOrEmpty(displayName) &&
+                        _shopNameOverrides.TryGetValue(displayName, out string? ov2))
+                        locationName = ov2;
+
+                    // ── Step 3: auto-compute "Bought " + displayName ───────────────────
+                    if (locationName == null && !string.IsNullOrEmpty(displayName))
+                        locationName = "Bought " + displayName;
+
+                    // ── Step 4: auto-compute "Bought " + assetName (last resort) ───────
+                    if (locationName == null && !string.IsNullOrEmpty(assetName))
+                        locationName = "Bought " + assetName;
+
+                    if (string.IsNullOrEmpty(locationName))
                     {
-                        Plugin.Logger.LogDebug($"[ShopBuyPatch] Could not resolve display name for item ID {itemId}.");
+                        Plugin.Logger.LogDebug(
+                            $"[ShopBuyPatch] Could not resolve any name for item ID {itemId}.");
                         continue;
                     }
 
-                    string locationName = "Bought " + displayName;
                     long locId = LocationData.GetId(locationName);
                     if (locId < 0)
                     {
-                        Plugin.Logger.LogDebug($"[ShopBuyPatch] '{locationName}' is not an AP location (non-AP item).");
+                        Plugin.Logger.LogDebug(
+                            $"[ShopBuyPatch] '{locationName}' is not an AP location (non-AP item).");
                         continue;
                     }
 
-                    Plugin.Logger.LogInfo($"[ShopBuyPatch] Purchase confirmed → sending check: {locationName}");
+                    Plugin.Logger.LogInfo(
+                        $"[ShopBuyPatch] Purchase confirmed → sending check: {locationName}");
                     Plugin.SendCheck(locId);
                 }
             }
@@ -153,38 +243,55 @@ namespace ContentWarningArchipelago.Patches
         }
 
         /// <summary>
-        /// Resolves the display name of a shop item from its byte ID using
-        /// <c>ItemDatabase.TryGetItemFromID</c> via reflection.
-        /// Returns null if the item could not be found.
+        /// Resolves the display name AND Unity asset name of a shop item from its byte ID
+        /// using <c>ItemDatabase.TryGetItemFromID</c> via reflection.
+        ///
+        /// <para>
+        /// <paramref name="displayName"/> is the value of <c>Item.displayName</c> (the
+        /// designer-set English string, e.g. "Modern Flashlight").  It is <c>null</c>
+        /// when the field is empty/missing — some emote items have no displayName and
+        /// rely entirely on the localization system.
+        /// </para>
+        /// <para>
+        /// <paramref name="assetName"/> is <c>UnityEngine.Object.name</c> — the Unity
+        /// asset name (e.g. "AncientGestures3", "Backflip").  Always available when the
+        /// item was found in the database.
+        /// </para>
+        /// Both outputs are <c>null</c> when the item ID is not in the database.
         /// </summary>
-        private static string? TryGetItemDisplayName(byte itemId)
+        private static void TryGetItemDisplayName(
+            byte itemId,
+            out string? displayName,
+            out string? assetName)
         {
+            displayName = null;
+            assetName   = null;
+
             // ItemDatabase.TryGetItemFromID(byte id, out Item item) is a static method.
             var dbType = AccessTools.TypeByName("ItemDatabase");
-            if (dbType == null) return null;
+            if (dbType == null) return;
 
             var tryGet = AccessTools.Method(dbType, "TryGetItemFromID");
-            if (tryGet == null) return null;
+            if (tryGet == null) return;
 
             var args = new object[] { itemId, null! };
             bool found = (bool)(tryGet.Invoke(null, args) ?? false);
-            if (!found || args[1] == null) return null;
+            if (!found || args[1] == null) return;
 
             object item = args[1];
 
-            // Prefer "displayName" field (matches location table naming).
+            // Capture the Unity asset name first (always present on a UnityEngine.Object).
+            if (item is UnityEngine.Object unityObj && !string.IsNullOrWhiteSpace(unityObj.name))
+                assetName = unityObj.name;
+
+            // Prefer "displayName" field (matches location table naming for most items).
             var displayField = AccessTools.Field(item.GetType(), "displayName");
             if (displayField != null)
             {
                 string? display = displayField.GetValue(item)?.ToString();
-                if (!string.IsNullOrWhiteSpace(display)) return display;
+                if (!string.IsNullOrWhiteSpace(display))
+                    displayName = display;
             }
-
-            // Fallback to Unity Object.name.
-            if (item is UnityEngine.Object unityObj && !string.IsNullOrWhiteSpace(unityObj.name))
-                return unityObj.name;
-
-            return null;
         }
     }
 
@@ -425,6 +532,34 @@ namespace ContentWarningArchipelago.Patches
             {
                 Plugin.Logger.LogError($"[ContentEvaluatorPatch] Exception in filming postfix: {ex}");
             }
+        }
+
+        // ------------------------------------------------------------------
+        // Per-dive entity tracking — tier advancement guard
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Entities (base AP location names) that have already been counted as
+        /// filmed during the current dive.  Cleared at the start of each new
+        /// dive by <see cref="ResetDailyFilmingState"/> so the same monster or
+        /// artifact can only advance the tier counter once per day.
+        /// </summary>
+        private static readonly HashSet<string> _monstersFilmedThisDay =
+            new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Clears the per-dive entity set.
+        /// Called from <c>SurfaceApplyRoomPropsPatch.RPCM_StartGamePostfix</c>
+        /// (LateJoinSyncPatch.cs) at the start of every dive so the same
+        /// monster/artifact can only count once toward tier advancement per day.
+        /// </summary>
+        public static void ResetDailyFilmingState()
+        {
+            int count = _monstersFilmedThisDay.Count;
+            _monstersFilmedThisDay.Clear();
+            Plugin.Logger.LogInfo(
+                $"[ContentEvaluatorPatch] Daily filming state reset " +
+                $"({count} entr{(count == 1 ? "y" : "ies")} cleared).");
         }
 
         // ------------------------------------------------------------------
@@ -669,23 +804,69 @@ namespace ContentWarningArchipelago.Patches
                 return;
             }
 
-            // Fire once per distinct location per EvaluateRecording call.
+            // ── Per-recording dedup ─────────────────────────────────────────────────
+            // Prevents firing multiple times for the same entity appearing in one
+            // ContentBuffer (e.g. a monster in several frames of the same recording).
             if (fired.Contains(locationName)) return;
             fired.Add(locationName);
 
-            long locId = LocationData.GetId(locationName);
-            if (locId < 0)
+            string baseLocationName = locationName;
+
+            // ── Per-dive dedup ──────────────────────────────────────────────────────
+            // Filming the same monster/artifact more than once during a single dive
+            // only counts as ONE new encounter for tier-progression purposes.
+            // The set is reset at the start of each dive (ResetDailyFilmingState).
+            if (_monstersFilmedThisDay.Contains(baseLocationName))
             {
-                Plugin.Logger.LogDebug($"[ContentEvaluatorPatch] '{locationName}' not in AP location table.");
+                Plugin.Logger.LogDebug(
+                    $"[ContentEvaluatorPatch] '{baseLocationName}' already filmed this dive — " +
+                    "skipping tier advancement.");
+                return;
+            }
+            _monstersFilmedThisDay.Add(baseLocationName);
+
+            // ── Tier selection ──────────────────────────────────────────────────────
+            // Send the first unchecked tier in order: base → tier 2 → tier 3.
+            // Tier 2/3 are only attempted when the AP world was generated with
+            // monster_tiers enabled (APSave.saveData.monsterTiersEnabled).
+            // This avoids sending bogus checks for non-existent locations when
+            // the option is off.
+            bool tiersOn = APSave.saveData.monsterTiersEnabled;
+
+            long locIdBase = LocationData.GetId(baseLocationName);
+            long locId2    = tiersOn ? LocationData.GetId(baseLocationName + " 2") : -1L;
+            long locId3    = tiersOn ? LocationData.GetId(baseLocationName + " 3") : -1L;
+
+            string? locationToSend = null;
+
+            if (locIdBase >= 0 && !APSave.IsLocationChecked(locIdBase))
+                locationToSend = baseLocationName;
+            else if (locId2 >= 0 && !APSave.IsLocationChecked(locId2))
+                locationToSend = baseLocationName + " 2";
+            else if (locId3 >= 0 && !APSave.IsLocationChecked(locId3))
+                locationToSend = baseLocationName + " 3";
+
+            if (locationToSend == null)
+            {
+                Plugin.Logger.LogDebug(
+                    $"[ContentEvaluatorPatch] All tiers for '{baseLocationName}' already checked.");
                 return;
             }
 
-            Plugin.Logger.LogInfo($"[ContentEvaluatorPatch] Filming check → {locationName}");
-            Plugin.SendCheck(locId);
+            long locIdToSend = LocationData.GetId(locationToSend);
+            if (locIdToSend < 0)
+            {
+                Plugin.Logger.LogDebug(
+                    $"[ContentEvaluatorPatch] '{locationToSend}' not in AP location table.");
+                return;
+            }
+
+            Plugin.Logger.LogInfo($"[ContentEvaluatorPatch] Filming check → {locationToSend}");
+            Plugin.SendCheck(locIdToSend);
 
             // Broadcast popup to all clients (non-master clients show it here;
             // master already saw it from ActivateCheck's local ShowLocationFound).
-            BroadcastAPCheckNotification(locationName);
+            BroadcastAPCheckNotification(locationToSend);
         }
 
         // ------------------------------------------------------------------

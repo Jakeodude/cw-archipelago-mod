@@ -49,9 +49,11 @@ namespace ContentWarningArchipelago.Data
         public const int OffsetMoneySmall        = 20;
         public const int OffsetMoneyMedium       = 21;
         public const int OffsetMoneyLarge        = 22;
+        public const int OffsetMoneyXLarge       = 23;   // $400 — added to match items.py offset 23
         public const int OffsetMetaCoinsSmall    = 30;
         public const int OffsetMetaCoinsMedium   = 31;
         public const int OffsetMetaCoinsLarge    = 32;
+        public const int OffsetMetaCoinsXLarge   = 33;   // 2,000 MC — added to match items.py offset 33
         public const int OffsetMonsterSpawn      = 40;
         public const int OffsetRagdollTrap       = 41;
 
@@ -73,9 +75,11 @@ namespace ContentWarningArchipelago.Data
             Register(OffsetMoneySmall,        ItemNames.MoneySmall);
             Register(OffsetMoneyMedium,       ItemNames.MoneyMedium);
             Register(OffsetMoneyLarge,        ItemNames.MoneyLarge);
+            Register(OffsetMoneyXLarge,       ItemNames.MoneyXLarge);
             Register(OffsetMetaCoinsSmall,    ItemNames.MetaCoinsSmall);
             Register(OffsetMetaCoinsMedium,   ItemNames.MetaCoinsMedium);
             Register(OffsetMetaCoinsLarge,    ItemNames.MetaCoinsLarge);
+            Register(OffsetMetaCoinsXLarge,   ItemNames.MetaCoinsXLarge);
             Register(OffsetMonsterSpawn,      ItemNames.MonsterSpawn);
             Register(OffsetRagdollTrap,       ItemNames.RagdollTrap);
         }
@@ -264,18 +268,24 @@ namespace ContentWarningArchipelago.Data
                 // (master client only).  If not ready or not master, queue in
                 // pendingMoney which MoneyPatch drains on the next InitShop.
                 //
+                // Amounts match items.py exactly:
+                //   $100 (offset 20), $200 (offset 21), $300 (offset 22), $400 (offset 23)
+                //
                 // HOST PRIORITY: Only the master client applies money grants.
                 // Non-master clients skip these entirely to prevent doubling the
                 // shared wallet when all players receive the same AP item.
                 // ==============================================================
-                case ItemNames.MoneySmall:
+                case ItemNames.MoneySmall:   // $100 — ID 98765020
+                    if (PhotonNetwork.IsMasterClient) GrantMoney(100, name, senderName);
+                    break;
+                case ItemNames.MoneyMedium:  // $200 — ID 98765021
                     if (PhotonNetwork.IsMasterClient) GrantMoney(200, name, senderName);
                     break;
-                case ItemNames.MoneyMedium:
-                    if (PhotonNetwork.IsMasterClient) GrantMoney(400, name, senderName);
+                case ItemNames.MoneyLarge:   // $300 — ID 98765022
+                    if (PhotonNetwork.IsMasterClient) GrantMoney(300, name, senderName);
                     break;
-                case ItemNames.MoneyLarge:
-                    if (PhotonNetwork.IsMasterClient) GrantMoney(600, name, senderName);
+                case ItemNames.MoneyXLarge:  // $400 — ID 98765023 (previously missing)
+                    if (PhotonNetwork.IsMasterClient) GrantMoney(400, name, senderName);
                     break;
 
                 // ==============================================================
@@ -283,20 +293,26 @@ namespace ContentWarningArchipelago.Data
                 // (same static method the game itself uses in console commands).
                 // Also calls UserInterface.ShowMoneyNotification internally.
                 //
+                // Amounts match items.py exactly:
+                //   500 (offset 30), 1,000 (offset 31), 1,500 (offset 32), 2,000 (offset 33)
+                //
                 // HOST PRIORITY: Only the master client grants MetaCoins.
                 // MetaProgressionHandler.AddMetaCoins writes to a shared save; if
                 // every connected client called it, each player would receive
                 // the full amount independently, effectively multiplying the grant
                 // by the player count.
                 // ==============================================================
-                case ItemNames.MetaCoinsSmall:
+                case ItemNames.MetaCoinsSmall:   // 500 MC — ID 98765030
+                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(500, name);
+                    break;
+                case ItemNames.MetaCoinsMedium:  // 1,000 MC — ID 98765031
                     if (PhotonNetwork.IsMasterClient) GrantMetaCoins(1000, name);
                     break;
-                case ItemNames.MetaCoinsMedium:
-                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(2000, name);
+                case ItemNames.MetaCoinsLarge:   // 1,500 MC — ID 98765032
+                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(1500, name);
                     break;
-                case ItemNames.MetaCoinsLarge:
-                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(3000, name);
+                case ItemNames.MetaCoinsXLarge:  // 2,000 MC — ID 98765033 (previously missing)
+                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(2000, name);
                     break;
 
                 // ==============================================================

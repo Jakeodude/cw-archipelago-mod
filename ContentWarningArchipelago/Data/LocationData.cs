@@ -93,6 +93,36 @@ namespace ContentWarningArchipelago.Data
             Register("Filmed Apple",                  411);
             Register("Filmed Reporter Mic",           412);
 
+            // ==================== ARTIFACT TIER 2 (offsets 413–425) ====================
+            Register("Filmed Ribcage 2",               413);
+            Register("Filmed Skull 2",                 414);
+            Register("Filmed Spine 2",                 415);
+            Register("Filmed Bone 2",                  416);
+            Register("Filmed Brain on a Stick 2",      417);
+            Register("Filmed Radio 2",                 418);
+            Register("Filmed Shroom 2",                419);
+            Register("Filmed Animal Statues 2",        420);
+            Register("Filmed Radioactive Container 2", 421);
+            Register("Filmed Old Painting 2",          422);
+            Register("Filmed Chorby 2",                423);
+            Register("Filmed Apple 2",                 424);
+            Register("Filmed Reporter Mic 2",          425);
+
+            // ==================== ARTIFACT TIER 3 (offsets 426–438) ====================
+            Register("Filmed Ribcage 3",               426);
+            Register("Filmed Skull 3",                 427);
+            Register("Filmed Spine 3",                 428);
+            Register("Filmed Bone 3",                  429);
+            Register("Filmed Brain on a Stick 3",      430);
+            Register("Filmed Radio 3",                 431);
+            Register("Filmed Shroom 3",                432);
+            Register("Filmed Animal Statues 3",        433);
+            Register("Filmed Radioactive Container 3", 434);
+            Register("Filmed Old Painting 3",          435);
+            Register("Filmed Chorby 3",                436);
+            Register("Filmed Apple 3",                 437);
+            Register("Filmed Reporter Mic 3",          438);
+
             // ==================== STORE PURCHASES (offsets 500–515) ====================
             Register("Bought Old Flashlight",      500);
             Register("Bought Flare",               501);

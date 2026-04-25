@@ -251,6 +251,11 @@ namespace ContentWarningArchipelago.Patches
         [HarmonyPatch(nameof(SurfaceNetworkHandler.RPCM_StartGame))]
         private static void RPCM_StartGamePostfix()
         {
+            // Reset per-dive filming state so the same monster/artifact can only
+            // advance its tier counter ONCE per dive (filming it multiple times
+            // in one dive only counts as a single new encounter).
+            ContentEvaluatorPatch.ResetDailyFilmingState();
+
             if (!Plugin.connection.connected) return;
 
             LateJoinSyncPatch.ApplyRoomProperties();

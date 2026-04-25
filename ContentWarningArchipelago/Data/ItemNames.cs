@@ -27,14 +27,20 @@ namespace ContentWarningArchipelago.Data
         public const string Defibrillator = "Defibrillator";
 
         // ---- Money ($) — filler ----
-        public const string MoneySmall  = "$200";
-        public const string MoneyMedium = "$400";
-        public const string MoneyLarge  = "$600";
+        // Names match item_names.py exactly: $100 / $200 / $300 / $400
+        // The values represent the nominal dollar amount shown to the player.
+        // In-game the amounts are granted 1-to-1 (i.e. $100 → +$100 in lobby wallet).
+        public const string MoneySmall  = "$100";   // offset 20 — ID 98765020
+        public const string MoneyMedium = "$200";   // offset 21 — ID 98765021
+        public const string MoneyLarge  = "$300";   // offset 22 — ID 98765022
+        public const string MoneyXLarge = "$400";   // offset 23 — ID 98765023
 
         // ---- Meta Coins — filler ----
-        public const string MetaCoinsSmall  = "1,000 Meta Coins";
-        public const string MetaCoinsMedium = "2,000 Meta Coins";
-        public const string MetaCoinsLarge  = "3,000 Meta Coins";
+        // Names match item_names.py: 500 / 1,000 / 1,500 / 2,000 Meta Coins
+        public const string MetaCoinsSmall  = "500 Meta Coins";    // offset 30 — ID 98765030
+        public const string MetaCoinsMedium = "1,000 Meta Coins";  // offset 31 — ID 98765031
+        public const string MetaCoinsLarge  = "1,500 Meta Coins";  // offset 32 — ID 98765032
+        public const string MetaCoinsXLarge = "2,000 Meta Coins";  // offset 33 — ID 98765033
 
         // ---- Traps ----
         public const string MonsterSpawn = "Monster Spawn Trap";
