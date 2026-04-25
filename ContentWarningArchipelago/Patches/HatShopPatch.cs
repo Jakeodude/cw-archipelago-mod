@@ -35,6 +35,7 @@ using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
 using HarmonyLib;
 using Photon.Pun;
+using TMPro;
 using UnityEngine;
 
 namespace ContentWarningArchipelago.Patches
@@ -271,7 +272,10 @@ namespace ContentWarningArchipelago.Patches
                 string labelText  = $"{hatDisplay} [{itemName}]";
 
                 if (slot.nameText != null)
+                {
                     slot.nameText.text = labelText;
+                    ApplyAutoSizing(slot.nameText);
+                }
 
                 HatShopRestockLabelPatch.ScoutedNames[slot] = labelText;
                 labelsForBroadcast[i] = labelText;
@@ -330,7 +334,10 @@ namespace ContentWarningArchipelago.Patches
                 if (slot == null || slot.IsEmpty || slot.ihat == null) continue;
 
                 if (slot.nameText != null)
+                {
                     slot.nameText.text = label;
+                    ApplyAutoSizing(slot.nameText);
+                }
 
                 // Also update ScoutedNames so LateJoinSyncPatch has accurate data.
                 HatShopRestockLabelPatch.ScoutedNames[slot] = label;
@@ -338,6 +345,27 @@ namespace ContentWarningArchipelago.Patches
 
             Plugin.Logger.LogInfo(
                 $"[HatShopAPSyncBehaviour] RPCA_SyncArchipelagoLabels: applied {labels.Length} label(s).");
+        }
+
+        // (ApplyAutoSizing helper is defined below)
+
+        // ------------------------------------------------------------------
+        // UI helper — auto-resize TMP so long AP item names never clip
+        // ------------------------------------------------------------------
+
+        /// <summary>
+        /// Enables TMP auto-sizing on a hat slot's name label so that long
+        /// strings like "Beanie [Progressive Camera]" shrink to fit the
+        /// physical board space rather than overflowing or being clipped.
+        /// </summary>
+        private static void ApplyAutoSizing(TextMeshPro tmp)
+        {
+            if (tmp == null) return;
+            tmp.enableWordWrapping = true;
+            tmp.enableAutoSizing   = true;
+            // fontSizeMax should be at least the current configured size.
+            tmp.fontSizeMax = Mathf.Max(tmp.fontSize, tmp.fontSizeMax > 0f ? tmp.fontSizeMax : tmp.fontSize);
+            tmp.fontSizeMin = 12f;
         }
 
         // ------------------------------------------------------------------
@@ -360,6 +388,76 @@ namespace ContentWarningArchipelago.Patches
                 $"[HatShopAPSyncBehaviour] No location mapping for hat " +
                 $"displayName='{hat.displayName}' / GetName()='{hat.GetName()}'.");
             return null;
+        }
+    }
+
+    // =========================================================================
+    // 2b. HAT PURCHASE AP CHECK — prefix on HatShop.RPCA_BuyHat
+    //
+    // Fires the "Bought X" AP location check when a hat is purchased.
+    // Must be a Prefix (not Postfix) because hatBuyInteractable.ClearHat()
+    // destroys slot.ihat at the end of RPCA_BuyHat; we need ihat still alive.
+    // Only the master client sends the check (RPCA_BuyHat is RpcTarget.All).
+    // =========================================================================
+
+    [HarmonyPatch(typeof(HatShop), "RPCA_BuyHat")]
+    internal static class HatShopBuyAPCheckPatch
+    {
+        [HarmonyPrefix]
+        private static void Prefix(HatShop __instance, int hatBuyIndex)
+        {
+            if (!Plugin.connection.connected) return;
+            if (!PhotonNetwork.IsMasterClient) return;
+
+            try
+            {
+                if (hatBuyIndex < 0 || hatBuyIndex >= __instance.hatBuyInteractables.Count) return;
+
+                var slot = __instance.hatBuyInteractables[hatBuyIndex];
+                if (slot == null || slot.IsEmpty || slot.ihat == null) return;
+
+                // Resolve AP location name using the same priority as the label patch.
+                string? locationName = null;
+
+                if (!string.IsNullOrEmpty(slot.ihat.displayName) &&
+                    HatShopAPLabelPatch.HatNameToLocation.TryGetValue(slot.ihat.displayName, out var loc1))
+                    locationName = loc1;
+                else
+                {
+                    string localName = slot.ihat.GetName();
+                    if (!string.IsNullOrEmpty(localName) &&
+                        HatShopAPLabelPatch.HatNameToLocation.TryGetValue(localName, out var loc2))
+                        locationName = loc2;
+                }
+
+                // Fallback: auto-compute from whichever name is available.
+                if (locationName == null)
+                {
+                    string fallbackName = !string.IsNullOrEmpty(slot.ihat.displayName)
+                        ? slot.ihat.displayName
+                        : slot.ihat.GetName();
+                    if (!string.IsNullOrEmpty(fallbackName))
+                        locationName = "Bought " + fallbackName;
+                }
+
+                if (string.IsNullOrEmpty(locationName)) return;
+
+                long locId = LocationData.GetId(locationName);
+                if (locId < 0)
+                {
+                    Plugin.Logger.LogDebug(
+                        $"[HatShopBuyAPCheckPatch] '{locationName}' not in AP location table.");
+                    return;
+                }
+
+                Plugin.Logger.LogInfo(
+                    $"[HatShopBuyAPCheckPatch] Hat purchase → sending check: {locationName}");
+                Plugin.SendCheck(locId);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogWarning($"[HatShopBuyAPCheckPatch] Exception: {ex.Message}");
+            }
         }
     }
 

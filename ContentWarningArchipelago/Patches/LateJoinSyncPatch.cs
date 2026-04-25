@@ -246,14 +246,14 @@ namespace ContentWarningArchipelago.Patches
         /// <summary>
         /// After the game starts / the surface scene is ready, apply any AP
         /// world-state that the master client published before we joined.
+        /// Also resets the per-dive filming state for the very first dive of
+        /// the session (day 1 initialisation).
         /// </summary>
         [HarmonyPostfix]
         [HarmonyPatch(nameof(SurfaceNetworkHandler.RPCM_StartGame))]
         private static void RPCM_StartGamePostfix()
         {
-            // Reset per-dive filming state so the same monster/artifact can only
-            // advance its tier counter ONCE per dive (filming it multiple times
-            // in one dive only counts as a single new encounter).
+            // Reset per-dive filming state for the first dive of the session.
             ContentEvaluatorPatch.ResetDailyFilmingState();
 
             if (!Plugin.connection.connected) return;
@@ -263,6 +263,36 @@ namespace ContentWarningArchipelago.Patches
             // If we're the master client, immediately broadcast our state too.
             if (PhotonNetwork.IsMasterClient)
                 LateJoinSyncPatch.BroadcastWorldState();
+        }
+    }
+
+    // =========================================================================
+    // SurfaceNetworkHandler.RPCA_Sleep patch
+    //
+    // RPCA_Sleep fires on ALL clients when all players go to sleep, transitioning
+    // the game to the next quota day.  Resetting the per-dive filming set here
+    // ensures that on the next dive each monster/artifact can advance to its next
+    // tier — the requirement is one tier per DIVE (day), not one per session.
+    //
+    // Kept separate from SurfaceApplyRoomPropsPatch so the patch attributes
+    // compile cleanly (one [HarmonyPatch(typeof(...))] per outer class).
+    // =========================================================================
+
+    [HarmonyPatch(typeof(SurfaceNetworkHandler), "RPCA_Sleep")]
+    [HarmonyPriority(Priority.Normal)]
+    internal static class SurfaceSleepResetPatch
+    {
+        /// <summary>
+        /// Postfix: clears the per-dive filming tracker so that filming the same
+        /// monster/artifact on the next day counts as a fresh encounter and can
+        /// advance to the next tier check.
+        /// </summary>
+        [HarmonyPostfix]
+        private static void Postfix()
+        {
+            // Always reset regardless of AP connection state so the set never
+            // carries stale entries into a reconnect scenario.
+            ContentEvaluatorPatch.ResetDailyFilmingState();
         }
     }
 }

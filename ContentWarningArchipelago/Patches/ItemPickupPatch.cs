@@ -122,9 +122,11 @@ namespace ContentWarningArchipelago.Patches
             { "Ancient Gestures 2", "Bought Ancient Gestures 2" },
             { "AncientGestures1",   "Bought Ancient Gestures 1" },
             { "Ancient Gestures 1", "Bought Ancient Gestures 1" },
-            // "Backflip" may appear as "Backflip" or a suffixed asset name
+            // "Backflip" — several internal asset name variants observed in the wild
             { "Backflip",           "Bought Backflip" },
             { "Backflip_Emote",     "Bought Backflip" },
+            { "HalfFlip",           "Bought Backflip" },  // confirmed in-game asset name
+            { "Half_Flip",          "Bought Backflip" },  // underscore variant (safety)
             { "Dance101",           "Bought Dance 101" },
             { "Dance 101",          "Bought Dance 101" },
             { "Dance102",           "Bought Dance 102" },
