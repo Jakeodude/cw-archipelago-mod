@@ -32,6 +32,8 @@
   <ItemGroup>
     <!-- Archipelago client library -->
     <PackageReference Include="Archipelago.MultiClient.Net" Version="6.*" />
+    <!-- Mycelium networking library -->
+    <PackageReference Include="RugbugRedfern.MyceliumNetworking.CW" Version="*" />
     <!-- Generates MyPluginInfo constants (PLUGIN_GUID, PLUGIN_NAME, PLUGIN_VERSION) -->
     <PackageReference Include="BepInEx.PluginInfoProps" Version="2.*" />
     <!--

@@ -6,10 +6,11 @@ using BepInEx.Logging;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
 using ContentWarningArchipelago.UI;
-using ExitGames.Client.Photon;
 using HarmonyLib;
+using MyceliumNetworking;
 using Photon.Pun;
 using Photon.Realtime;
+using Steamworks;
 
 namespace ContentWarningArchipelago
 {
@@ -38,20 +39,12 @@ namespace ContentWarningArchipelago
         public static string apPassword => APConfig?.password.Value ?? "";
         public static string apSlot     => APConfig?.slot.Value     ?? "";
 
-        // ------------------------------------------------------------------ Photon event codes
+        // ------------------------------------------------------------------ Networking constants
 
         /// <summary>
-        /// Custom Photon event code used to broadcast a "location found" HUD
-        /// notification from the player who triggered a check to all other
-        /// players in the lobby.
-        ///
-        /// Raised in <c>ArchipelagoClient.ActivateCheck</c> via
-        /// <c>PhotonNetwork.RaiseEvent</c> with <c>ReceiverGroup.Others</c>.
-        /// Received here in <see cref="OnPhotonEventReceived"/>.
-        ///
-        /// Value 73 is arbitrary; choose any byte not used by the game itself.
+        /// Unique mod ID for Mycelium networking.
         /// </summary>
-        internal const byte APLocationFoundEventCode = 73;
+        internal const uint MyceliumModId = 2718281828;
 
         // ------------------------------------------------------------------ static instance
 
@@ -84,6 +77,9 @@ namespace ContentWarningArchipelago
             var harmony = new Harmony(MyPluginInfo.PLUGIN_GUID);
             harmony.PatchAll();
 
+            // Register with Mycelium networking.
+            MyceliumNetwork.RegisterNetworkObject(this, MyceliumModId);
+
             Logger.LogInfo("[CWArch] Harmony patches applied.");
         }
 
@@ -94,6 +90,11 @@ namespace ContentWarningArchipelago
             // AP panel injection is handled automatically by the
             // MainMenuAPPatch [HarmonyPatch(typeof(MainMenuHandler), "Start")] postfix —
             // no manual call needed here.
+        }
+
+        private void OnDestroy()
+        {
+            MyceliumNetwork.DeregisterNetworkObject(this, MyceliumModId);
         }
 
         // ------------------------------------------------------------------ Frame tick
@@ -111,49 +112,17 @@ namespace ContentWarningArchipelago
             connection.outgoingCheckHandler?.MoveNext();
         }
 
-        // ------------------------------------------------------------------ Photon event subscription
+        // ------------------------------------------------------------------ Mycelium RPCs
 
-        /// <summary>
-        /// Subscribe to Photon's low-level event stream so we can receive the
-        /// <see cref="APLocationFoundEventCode"/> notification broadcast by other
-        /// players when they complete an AP check.
-        /// <para>
-        /// <c>OnEnable</c> / <c>OnDisable</c> are the correct Unity lifecycle hooks
-        /// for MonoBehaviour event subscriptions — they fire symmetrically on
-        /// enable/disable and on object destruction.
-        /// </para>
-        /// </summary>
-        private void OnEnable()
+        [CustomRPC]
+        internal void LocationFound(string locName, RPCInfo info)
         {
-            PhotonNetwork.NetworkingClient.EventReceived += OnPhotonEventReceived;
-        }
-
-        private void OnDisable()
-        {
-            PhotonNetwork.NetworkingClient.EventReceived -= OnPhotonEventReceived;
-        }
-
-        /// <summary>
-        /// Handles Photon custom events raised by other clients.
-        ///
-        /// <see cref="APLocationFoundEventCode"/> — received when any other player in
-        /// the lobby completes an AP check.  Displays the "Location Found!" HUD
-        /// notification locally so the whole team stays informed.
-        ///
-        /// Photon dispatches this on the Unity main thread, so it is safe to call
-        /// Unity APIs directly from here.
-        /// </summary>
-        private static void OnPhotonEventReceived(EventData eventData)
-        {
-            if (eventData.Code == APLocationFoundEventCode)
+            // Only show notification if not from self (since local player already sees it)
+            if (info.SenderSteamID != SteamUser.GetSteamID())
             {
-                string locName = eventData.CustomData as string ?? string.Empty;
-                if (!string.IsNullOrEmpty(locName))
-                {
-                    Logger.LogDebug(
-                        $"[CWArch] Received remote location-found notification: '{locName}'");
-                    APNotificationUI.ShowLocationFound(locName);
-                }
+                Logger.LogDebug(
+                    $"[CWArch] Received remote location-found notification: '{locName}'");
+                APNotificationUI.ShowLocationFound(locName);
             }
         }
 
