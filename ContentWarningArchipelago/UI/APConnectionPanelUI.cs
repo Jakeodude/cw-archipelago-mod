@@ -63,7 +63,7 @@ namespace ContentWarningArchipelago.UI
 
             if (Plugin.isConnecting)
             {
-                _statusLabel.text  = "⟳  Connecting\u2026";
+                _statusLabel.text  = "○  Connecting\u2026";
                 _statusLabel.color = ColConnecting;
             }
             else if (Plugin.connection != null && Plugin.connection.connected)
