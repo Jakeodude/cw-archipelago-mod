@@ -127,6 +127,8 @@ namespace ContentWarningArchipelago.Patches
             { "Backflip_Emote",     "Bought Backflip" },
             { "HalfFlip",           "Bought Backflip" },  // confirmed in-game asset name
             { "Half_Flip",          "Bought Backflip" },  // underscore variant (safety)
+            { "Emote_HalfBackflip",    "Bought Backflip" },  // confirmed runtime asset name (issue #2)
+            { "Emote_HalfBackflip_01", "Bought Backflip" },  // indexed instantiation variant (safety)
             { "Dance101",           "Bought Dance 101" },
             { "Dance 101",          "Bought Dance 101" },
             { "Dance102",           "Bought Dance 102" },
