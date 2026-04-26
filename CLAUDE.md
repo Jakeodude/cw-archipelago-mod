@@ -21,7 +21,7 @@ After any code change: build, then if possible smoke-test in-game with two Steam
 Archipelago needs **both** halves to work:
 
 1. **This mod** (C#, runs in the game) — handles client-side: fires checks, applies items, shows UI.
-2. **The APWorld** (Python, runs on the AP server) — defines item lists, location lists, randomization rules.
+2. **The APWorld** (Python, runs on the AP server) — defines item lists, location lists, randomization rules. Co-developed in sibling repo [`../cw-apworld/`](../cw-apworld/); build output is `content_warning.apworld`. Python lives under `ap_world/` (`items.py`, `locations.py`, `options.py`).
 
 If you add or rename an item/location here, the matching change must land in the APWorld too. **IDs and names must match exactly.** The base ID is `98765000` (`item_base_id` in the APWorld's `items.py`), and each item/location uses a fixed offset from there.
 
@@ -80,3 +80,4 @@ When debugging an `Awake()` failure: the *Unity* log usually has the stack trace
 - Don't invent file names or APIs — grep first. The codebase is small enough (~20 source files) to walk end-to-end in one pass.
 - Don't add backwards-compat shims, dead-code preservation, or speculative abstractions. The mod is at v0.1.0; ship simple changes.
 - The reference mods named in source-file headers (R.E.P.O. Archipelago Client Mod, BetterOxygen, StartingBudget, BetterDivingBellUI) are good places to look when you need a new pattern that this codebase doesn't already use.
+- For game-internals lookups (where a CW class is defined, what a method does) and additional mod-pattern examples, consult **read-only** sibling repo [`../cw-reference/cw-reference/`](../cw-reference/cw-reference/) — decompiled CW source + curated topic slices + example mods. Its [top-level README](../cw-reference/cw-reference/README.md) §6 system map and §7 task→files table are the primary lookups. Don't edit anything there.

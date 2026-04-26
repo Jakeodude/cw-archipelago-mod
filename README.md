@@ -8,7 +8,7 @@ A BepInEx mod that integrates [Content Warning](https://store.steampowered.com/a
 
 ## What this is
 
-Archipelago needs **two pieces** to randomize a game. This repo is the **game-side mod** (C# / BepInEx). The server-side **APWorld** (Python) — which defines item lists, location lists, and randomization rules — is a separate component that ships with the Archipelago server (see [ArchipelagoMW/Archipelago](https://github.com/ArchipelagoMW/Archipelago)).
+Archipelago needs **two pieces** to randomize a game. This repo is the **game-side mod** (C# / BepInEx). The server-side **APWorld** (Python) — which defines item lists, location lists, and randomization rules — is co-developed in the sibling repo [`../cw-apworld/`](../cw-apworld/) and produces a `content_warning.apworld` package that drops into an [Archipelago](https://github.com/ArchipelagoMW/Archipelago) server install.
 
 ```
 ┌──────────────────┐  WebSocket  ┌─────────────────────┐
@@ -23,6 +23,19 @@ Archipelago needs **two pieces** to randomize a game. This repo is the **game-si
 │ the same lobby   │
 └──────────────────┘
 ```
+
+---
+
+## Related repositories
+
+Two sibling repos on the same machine make up the rest of the project. **An AI working in this repo should know they exist and when to consult them.**
+
+| Local path | What it is | When to consult |
+|---|---|---|
+| [`../cw-apworld/`](../cw-apworld/) | The **Content Warning APWorld** (Python) — server-side counterpart to this mod. Defines items, locations, options, and randomization rules. Build output is `content_warning.apworld`. | Any change here that adds/renames/removes an item, location, or YAML option **must** land in `cw-apworld` too. IDs and names must match exactly across both sides — base ID is `98765000` (`item_base_id` in the APWorld's `items.py`). The README there is user-facing (install + YAML); the Python lives under `ap_world/` (`items.py`, `locations.py`, `options.py`, etc.). |
+| [`../cw-reference/cw-reference/`](../cw-reference/cw-reference/) | **Read-only** reference workspace for CW modding. Contains the full decompiled game source (`ContentWarning_Source/`), curated topic slices (`Game_Ref/` — Battery, Shop, Hats, Monster_Data, etc.), and example CW mods (`Example_mods/`). Note the doubly-nested folder. | Game-internals lookups ("where is class X defined", "what does method Y do"), mod-shape templates, and topic-scoped reading. The [top-level README](../cw-reference/cw-reference/README.md) is the AI entry point — its **§6 system map** and **§7 task→files table** are the primary lookups when planning a patch. **Do not edit anything in this repo** — it's decompiled output, regenerated from DLLs. |
+
+The complete project deliverable is two files: this repo's `ContentWarningArchipelago.dll` plus `cw-apworld`'s `content_warning.apworld`.
 
 ---
 
