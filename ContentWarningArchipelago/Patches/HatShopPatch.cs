@@ -154,6 +154,16 @@ namespace ContentWarningArchipelago.Patches
         /// </summary>
         internal static readonly Dictionary<HatBuyInteractable, string> ScoutedNames =
             new Dictionary<HatBuyInteractable, string>();
+
+        /// <summary>
+        /// Maps each hat-shop slot → just the AP item name (e.g. "Progressive Camera"),
+        /// without the hat-name prefix or brackets.
+        /// Consumed by <see cref="HatBuyInteractableHoverTextPatch"/> to append AP
+        /// context to the in-world hover tooltip.
+        /// Cleared and repopulated alongside <see cref="ScoutedNames"/>.
+        /// </summary>
+        internal static readonly Dictionary<HatBuyInteractable, string> ScoutedAPItemNames =
+            new Dictionary<HatBuyInteractable, string>();
     }
 
     // =========================================================================
@@ -255,6 +265,7 @@ namespace ContentWarningArchipelago.Patches
 
             // ── Step 3: apply labels locally + populate ScoutedNames ────────
             HatShopRestockLabelPatch.ScoutedNames.Clear();
+            HatShopRestockLabelPatch.ScoutedAPItemNames.Clear();
 
             var labelsForBroadcast = new string[hatShop.hatBuyInteractables.Count];
 
@@ -277,7 +288,8 @@ namespace ContentWarningArchipelago.Patches
                     ApplyAutoSizing(slot.nameText);
                 }
 
-                HatShopRestockLabelPatch.ScoutedNames[slot] = labelText;
+                HatShopRestockLabelPatch.ScoutedNames[slot]        = labelText;
+                HatShopRestockLabelPatch.ScoutedAPItemNames[slot]  = itemName;
                 labelsForBroadcast[i] = labelText;
 
                 Plugin.Logger.LogInfo(
@@ -341,6 +353,18 @@ namespace ContentWarningArchipelago.Patches
 
                 // Also update ScoutedNames so LateJoinSyncPatch has accurate data.
                 HatShopRestockLabelPatch.ScoutedNames[slot] = label;
+
+                // Parse "<HatName> [<APItemName>]" → cache the AP item name so the
+                // HatBuyInteractable.hoverText Postfix can append it to the tooltip
+                // on non-master and late-joining clients.
+                int openBracket  = label.LastIndexOf('[');
+                int closeBracket = label.LastIndexOf(']');
+                if (openBracket >= 0 && closeBracket > openBracket)
+                {
+                    string apItemName = label.Substring(openBracket + 1, closeBracket - openBracket - 1);
+                    if (!string.IsNullOrEmpty(apItemName))
+                        HatShopRestockLabelPatch.ScoutedAPItemNames[slot] = apItemName;
+                }
             }
 
             Plugin.Logger.LogInfo(
@@ -365,7 +389,12 @@ namespace ContentWarningArchipelago.Patches
             tmp.enableAutoSizing   = true;
             // fontSizeMax should be at least the current configured size.
             tmp.fontSizeMax = Mathf.Max(tmp.fontSize, tmp.fontSizeMax > 0f ? tmp.fontSizeMax : tmp.fontSize);
-            tmp.fontSizeMin = 12f;
+            // Allow drastic shrinkage so long AP item names ("Progressive Camera",
+            // "Progressive Battery") fit the physical board space (issue #3).
+            tmp.fontSizeMin  = 8f;
+            // Fail-safe: clip anything that still won't fit at the minimum size
+            // rather than spilling outside the UI bounding box.
+            tmp.overflowMode = TextOverflowModes.Truncate;
         }
 
         // ------------------------------------------------------------------
@@ -566,6 +595,38 @@ namespace ContentWarningArchipelago.Patches
                 Plugin.Logger.LogDebug(
                     $"[HatShopRestockPatch] '{slot.ihat.GetName()}' → " +
                     $"{price} MC ({(fromTable ? "table" : "rarity fallback")})");
+            }
+        }
+    }
+
+    // =========================================================================
+    // 4. HOVER TOOLTIP — postfix on HatBuyInteractable.hoverText getter
+    //
+    // Vanilla hoverText is a computed property override that returns the
+    // localized "Buy {hatName}" / "Already own {hatName}" / "Can't afford"
+    // string.  The override has no setter, so we cannot assign to it from
+    // outside; instead we Postfix the getter and append " [<APItemName>]" to
+    // whatever the base computed.
+    //
+    // The AP item name comes from HatShopRestockLabelPatch.ScoutedAPItemNames,
+    // populated on the master client by HatShopAPSyncBehaviour.ScoutAndLabel-
+    // Coroutine and on non-master / late-joining clients by the
+    // RPCA_SyncArchipelagoLabels handler.
+    // =========================================================================
+
+    [HarmonyPatch(typeof(HatBuyInteractable), nameof(HatBuyInteractable.hoverText), MethodType.Getter)]
+    internal static class HatBuyInteractableHoverTextPatch
+    {
+        [HarmonyPostfix]
+        private static void Postfix(HatBuyInteractable __instance, ref string __result)
+        {
+            if (string.IsNullOrEmpty(__result)) return;
+            if (__instance == null) return;
+
+            if (HatShopRestockLabelPatch.ScoutedAPItemNames.TryGetValue(__instance, out string apItemName)
+                && !string.IsNullOrEmpty(apItemName))
+            {
+                __result = $"{__result} [{apItemName}]";
             }
         }
     }
