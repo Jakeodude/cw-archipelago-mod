@@ -31,19 +31,27 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using ContentWarningArchipelago.Core;
 using ContentWarningArchipelago.Data;
 using HarmonyLib;
 using Photon.Pun;
+using pworld.Scripts.Extensions;
 using TMPro;
 using UnityEngine;
 
 namespace ContentWarningArchipelago.Patches
 {
     // =========================================================================
-    // 1. FIXED STOCK — prefix on HatShop.RPCA_StockShop
-    // Replaces the incoming date-based seed with the AP session seed hash so
-    // the hat selection is stable for the entire AP session.
+    // 1. PER-DAY STOCK — prefix on HatShop.RPCA_StockShop
+    //
+    // Vanilla seed is DateTime.Today.Date.GetHashCode() — same hats for the
+    // entire UTC day regardless of in-game progression.  We replace it with
+    // (apSeed + ":" + currentDay).GetHashCode() so the pool advances each
+    // in-game day but is still deterministic across all clients in the same
+    // AP session.  HatShop already calls StockShop on every dive transition
+    // (Start, StartGameAction, ReturnToSurfaceAction), so a per-day seed
+    // change is enough to refresh the displayed pool.  Issue #4.
     // =========================================================================
 
     [HarmonyPatch(typeof(HatShop), "RPCA_StockShop")]
@@ -55,12 +63,187 @@ namespace ContentWarningArchipelago.Patches
             if (!Plugin.connection.connected) return;
 
             string? apSeed = Plugin.connection.session?.RoomState.Seed;
-            if (!string.IsNullOrEmpty(apSeed))
+            if (string.IsNullOrEmpty(apSeed)) return;
+
+            int day = TryGetCurrentDay();
+            seed = $"{apSeed}:{day}".GetHashCode();
+            Plugin.Logger.LogInfo(
+                $"[HatShopFixedSeedPatch] Hat shop seed overridden " +
+                $"(apSeed + day {day}): {seed}");
+        }
+
+        /// <summary>
+        /// Reads the current in-game day.  Returns 0 if unresolvable (e.g. on
+        /// the very first StockShop call from HatShop.Start before any dive).
+        /// Falls back through GameAPI.CurrentDay → SurfaceNetworkHandler.RoomStats.CurrentDay.
+        /// </summary>
+        private static int TryGetCurrentDay()
+        {
+            var gameApiType = AccessTools.TypeByName("GameAPI");
+            if (gameApiType != null)
             {
-                seed = apSeed.GetHashCode();
-                Plugin.Logger.LogInfo(
-                    $"[HatShopFixedSeedPatch] Hat shop seed overridden to AP seed hash: {seed}");
+                var prop = AccessTools.Property(gameApiType, "CurrentDay");
+                if (prop != null)
+                {
+                    var val = prop.GetValue(null);
+                    if (val is int d && d > 0) return d;
+                }
             }
+
+            var snhType = AccessTools.TypeByName("SurfaceNetworkHandler");
+            if (snhType != null)
+            {
+                var roomStatsProp = AccessTools.Property(snhType, "RoomStats");
+                if (roomStatsProp != null)
+                {
+                    var roomStats = roomStatsProp.GetValue(null);
+                    if (roomStats != null)
+                    {
+                        var currentDayProp = AccessTools.Property(roomStats.GetType(), "CurrentDay");
+                        if (currentDayProp != null)
+                        {
+                            var val = currentDayProp.GetValue(roomStats);
+                            if (val is int d && d > 0) return d;
+                        }
+                    }
+                }
+            }
+
+            return 0;
+        }
+    }
+
+    // =========================================================================
+    // 1b. FILTERED RESTOCK — prefix-skip on HatShop.Restock
+    //
+    // Replaces the vanilla Restock body with one that filters out hats whose
+    // AP "Bought X" location has already been checked, so a purchased hat
+    // permanently leaves the pool.  When fewer than the slot count remain,
+    // the unfilled slots are left empty (ihat = null) per issue #4.
+    //
+    // Returns false → original Restock is skipped.  All Postfixes on Restock
+    // (HatShopAPLabelPatch.Postfix and HatShopRestockPatch.Postfix) still run
+    // because Harmony postfixes execute even when the prefix skips the
+    // original — they are guarded by `slot.IsEmpty` so unfilled slots are
+    // ignored gracefully.
+    //
+    // RNG determinism: every connected client runs this prefix with the
+    // identical seed (set in RPCA_StockShop) and identical filter set
+    // (AllLocationsChecked from the shared AP server), so all clients pick
+    // the same hats for the same slots.  Disconnected clients fall through
+    // to vanilla and may show extra hats that master sees as empty — those
+    // purchases are rejected by the master via the existing IsEmpty guard
+    // in RPCM_TryBuyHat.  See PR #N for full discussion.
+    // =========================================================================
+
+    [HarmonyPatch(typeof(HatShop), nameof(HatShop.Restock))]
+    internal static class HatShopFilterRestockPatch
+    {
+        [HarmonyPrefix]
+        private static bool Prefix(HatShop __instance)
+        {
+            // No AP connection → defer to vanilla Restock.
+            if (!Plugin.connection.connected) return true;
+            if (HatDatabase.instance == null || HatDatabase.instance.hats == null) return true;
+
+            // Read the saved seed that RPCA_StockShop just stored.
+            var seedField = AccessTools.Field(typeof(HatShop), "savedSeed");
+            if (seedField == null) return true;
+            int savedSeed = (int)(seedField.GetValue(__instance) ?? 0);
+
+            var rngState = UnityEngine.Random.state;
+            UnityEngine.Random.InitState(savedSeed);
+
+            try
+            {
+                var checkedLocs = Plugin.connection.session?.Locations.AllLocationsChecked;
+
+                // Build pool of hats whose AP location is not yet checked.
+                // Hats with no AP mapping (LocationData.GetId < 0) stay in the
+                // pool so the shop still functions for vanilla-only hats.
+                var available = new List<Hat>();
+                foreach (var hat in HatDatabase.instance.hats)
+                {
+                    if (hat == null) continue;
+                    if (IsHatLocationChecked(hat, checkedLocs)) continue;
+                    available.Add(hat);
+                }
+
+                int slotCount = __instance.hatBuyInteractables.Count;
+                int pickCount = Math.Min(slotCount, available.Count);
+
+                List<Hat> picked = pickCount > 0
+                    ? available.GetRandomNoDuplicates(pickCount)
+                    : new List<Hat>();
+
+                for (int i = 0; i < slotCount; i++)
+                {
+                    var slot = __instance.hatBuyInteractables[i];
+                    if (slot == null) continue;
+
+                    if (i < picked.Count)
+                    {
+                        Hat hat = picked[i];
+                        // Vanilla random price formula — postfix overwrites with
+                        // tier price, but we match vanilla's RNG draws so the
+                        // seeded state advances identically across clients.
+                        int basePrice = Mathf.RoundToInt(
+                            (float)hat.GetBasePrice() * UnityEngine.Random.Range(0.5f, 2f) / 10f) * 10;
+                        slot.LoadHat(hat.gameObject, basePrice);
+                    }
+                    else
+                    {
+                        // Pool exhausted (late-game) — leave slot empty.
+                        slot.ClearHat();
+                        if (slot.nameText  != null) slot.nameText.text  = string.Empty;
+                        if (slot.priceText != null) slot.priceText.text = string.Empty;
+                    }
+                }
+
+                Plugin.Logger.LogInfo(
+                    $"[HatShopFilterRestockPatch] Filtered restock: " +
+                    $"{pickCount}/{slotCount} slots filled, " +
+                    $"{available.Count} unbought hats in pool.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogError($"[HatShopFilterRestockPatch] Exception: {ex}");
+            }
+            finally
+            {
+                UnityEngine.Random.state = rngState;
+            }
+
+            return false; // skip vanilla Restock body
+        }
+
+        /// <summary>
+        /// True when the hat's AP "Bought X" location is in the checked set.
+        /// False (= keep in pool) for hats with no AP mapping or unknown to the
+        /// AP location table.
+        /// </summary>
+        private static bool IsHatLocationChecked(Hat hat, IReadOnlyCollection<long>? checkedLocs)
+        {
+            if (checkedLocs == null || checkedLocs.Count == 0) return false;
+
+            string? locName = null;
+            if (!string.IsNullOrEmpty(hat.displayName) &&
+                HatShopAPLabelPatch.HatNameToLocation.TryGetValue(hat.displayName, out var loc1))
+                locName = loc1;
+            else
+            {
+                string localName = hat.GetName();
+                if (!string.IsNullOrEmpty(localName) &&
+                    HatShopAPLabelPatch.HatNameToLocation.TryGetValue(localName, out var loc2))
+                    locName = loc2;
+            }
+
+            if (string.IsNullOrEmpty(locName)) return false;
+
+            long locId = LocationData.GetId(locName);
+            if (locId < 0) return false;
+
+            return checkedLocs.Contains(locId);
         }
     }
 
