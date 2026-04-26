@@ -78,6 +78,56 @@ namespace ContentWarningArchipelago.Data
             Register("Filmed Streamer",      328);
             Register("Filmed Ultra Knifo",   329);
 
+            // ==================== MONSTER TIER 2 (offsets 330–350) ====================
+            // Names and offsets must match cw-apworld locations.py exactly.
+            // The APWorld only tiers a subset of monsters; missing entries here
+            // (e.g. Cam Creep, Ear, Flicker, Big Slap) are intentional — those
+            // monsters only have a base check.
+            Register("Filmed Slurper 2",       330);
+            Register("Filmed Zombe 2",         331);
+            Register("Filmed Button Robot 2",  332);
+            Register("Filmed Puffo 2",         333);
+            Register("Filmed Whisk 2",         334);
+            Register("Filmed Arms 2",          335);
+            Register("Filmed Worm 2",          336);
+            Register("Filmed Mouthe 2",        337);
+            Register("Filmed Spider 2",        338);
+            Register("Filmed Bomber 2",        339);
+            Register("Filmed Dog 2",           340);
+            Register("Filmed Eye Guy 2",       341);
+            Register("Filmed Knifo 2",         342);
+            Register("Filmed Larva 2",         343);
+            Register("Filmed Harpooner 2",     344);
+            Register("Filmed Barnacle Ball 2", 345);
+            Register("Filmed Snatcho 2",       346);
+            Register("Filmed Jelly 2",         347);
+            Register("Filmed Fire 2",          348);
+            Register("Filmed Mime 2",          349);
+            Register("Filmed Streamer 2",      350);
+
+            // ==================== MONSTER TIER 3 (offsets 351–371) ====================
+            Register("Filmed Slurper 3",       351);
+            Register("Filmed Zombe 3",         352);
+            Register("Filmed Button Robot 3",  353);
+            Register("Filmed Puffo 3",         354);
+            Register("Filmed Whisk 3",         355);
+            Register("Filmed Arms 3",          356);
+            Register("Filmed Worm 3",          357);
+            Register("Filmed Mouthe 3",        358);
+            Register("Filmed Spider 3",        359);
+            Register("Filmed Bomber 3",        360);
+            Register("Filmed Dog 3",           361);
+            Register("Filmed Eye Guy 3",       362);
+            Register("Filmed Knifo 3",         363);
+            Register("Filmed Larva 3",         364);
+            Register("Filmed Harpooner 3",     365);
+            Register("Filmed Barnacle Ball 3", 366);
+            Register("Filmed Snatcho 3",       367);
+            Register("Filmed Jelly 3",         368);
+            Register("Filmed Fire 3",          369);
+            Register("Filmed Mime 3",          370);
+            Register("Filmed Streamer 3",      371);
+
             // ==================== ARTIFACT FILMING (offsets 400–412) ====================
             Register("Filmed Ribcage",                400);
             Register("Filmed Skull",                  401);
