@@ -81,3 +81,19 @@ When debugging an `Awake()` failure: the *Unity* log usually has the stack trace
 - Don't add backwards-compat shims, dead-code preservation, or speculative abstractions. The mod is at v0.1.0; ship simple changes.
 - The reference mods named in source-file headers (R.E.P.O. Archipelago Client Mod, BetterOxygen, StartingBudget, BetterDivingBellUI) are good places to look when you need a new pattern that this codebase doesn't already use.
 - For game-internals lookups (where a CW class is defined, what a method does) and additional mod-pattern examples, consult **read-only** sibling repo [`../cw-reference/cw-reference/`](../cw-reference/cw-reference/) — decompiled CW source + curated topic slices + example mods. Its [top-level README](../cw-reference/cw-reference/README.md) §6 system map and §7 task→files table are the primary lookups. Don't edit anything there.
+
+## Working with issues
+
+Issues are filed with detailed Actionable Tasks lists, often co-authored with another AI assistant before reaching the repo. Trust the *mechanical* parts (renames, reorders, file moves); expect ambiguity in the *domain* parts — anything where the right answer depends on game-side knowledge or playtest experience the issue author has and you don't.
+
+Before coding:
+
+1. **Read related issues together.** Cross-references like "Following the X refactor…" or shared option/slot-data names mean issues are dependent — implement and merge them in **one PR**. Splitting them lands dead config in `main` between merges and forces the sibling-repo update to happen twice.
+2. **Surface ambiguities first via `gh issue comment <num>`.** When a task needs context the issue text doesn't supply, post numbered questions with a/b/c options and a recommended pick. Move on to other workable issues while waiting — do not guess. The issue author is the only person who can answer; comments also create a durable record for whoever (or whichever AI) picks the work up later.
+3. **Flag cross-repo coordination.** Slot-data key renames, item/location ID changes, new in-game pickups, and new client events all require matching changes in the sibling repo (apworld ↔ mod). When surfacing questions, call these out so the sibling-repo issue can be filed in the same window and both sides land together.
+
+## Branch hygiene
+
+- One branch per issue, or per issue group bundled into one PR. Names: `fix/issue-N-<slug>`.
+- **Don't piggyback unrelated commits.** Drive-by changes on a feature branch invite merge conflicts that have nothing to do with the issue's actual work, and force a force-push to recover.
+- Use `Closes #N` (or `Closes Org/Repo#N` for cross-repo) in PR descriptions so issues auto-close on merge.
