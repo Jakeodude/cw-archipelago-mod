@@ -80,19 +80,15 @@ namespace ContentWarningArchipelago.Core
         // Money is lobby-shared (only the master client can call AddMoney).
         // If we receive a money item before RoomStats is ready, or while we are
         // not the master client, we store it here and drain it in MoneyPatch.
+        //
+        // Meta Coins are AP-authoritative via the DataStorage key
+        // CW_MetaCoins_{slot} (issue #10) — there is no MC pending queue.
 
         /// <summary>
         /// Dollars ($) pending to be added to the shared wallet via
         /// <c>RoomStatsHolder.AddMoney()</c>. Only the master client drains this.
         /// </summary>
         public int pendingMoney = 0;
-
-        /// <summary>
-        /// Meta Coins pending grant. Normally applied immediately via
-        /// <c>MetaProgressionHandler.AddMetaCoins()</c>, but queued here if the
-        /// singleton isn't ready yet.
-        /// </summary>
-        public int pendingMetaCoins = 0;
 
         // ------------------------------------------------------------------ Monster / artifact tiers
 

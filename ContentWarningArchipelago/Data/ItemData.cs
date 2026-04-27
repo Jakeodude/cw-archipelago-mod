@@ -289,30 +289,32 @@ namespace ContentWarningArchipelago.Data
                     break;
 
                 // ==============================================================
-                // META COINS — direct call to MetaProgressionHandler.AddMetaCoins
-                // (same static method the game itself uses in console commands).
-                // Also calls UserInterface.ShowMoneyNotification internally.
+                // META COINS — DataStorage-routed grant (issue #10)
+                //
+                // The lobby's MC balance lives in the AP DataStorage key
+                // CW_MetaCoins_{slot}.  Only the master client sends the
+                // delta op; the OnValueChanged listener in ArchipelagoClient
+                // updates every client's local MC field so the HUD reflects
+                // the new balance instantly.
+                //
+                // Notifications are still shown on every client — every player
+                // in the lobby is sharing the slot, so the item arrived for
+                // all of them.
                 //
                 // Amounts match items.py exactly:
                 //   500 (offset 30), 1,000 (offset 31), 1,500 (offset 32), 2,000 (offset 33)
-                //
-                // HOST PRIORITY: Only the master client grants MetaCoins.
-                // MetaProgressionHandler.AddMetaCoins writes to a shared save; if
-                // every connected client called it, each player would receive
-                // the full amount independently, effectively multiplying the grant
-                // by the player count.
                 // ==============================================================
                 case ItemNames.MetaCoinsSmall:   // 500 MC — ID 98765030
-                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(500, name);
+                    GrantMetaCoins(500, name);
                     break;
                 case ItemNames.MetaCoinsMedium:  // 1,000 MC — ID 98765031
-                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(1000, name);
+                    GrantMetaCoins(1000, name);
                     break;
                 case ItemNames.MetaCoinsLarge:   // 1,500 MC — ID 98765032
-                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(1500, name);
+                    GrantMetaCoins(1500, name);
                     break;
                 case ItemNames.MetaCoinsXLarge:  // 2,000 MC — ID 98765033 (previously missing)
-                    if (PhotonNetwork.IsMasterClient) GrantMetaCoins(2000, name);
+                    GrantMetaCoins(2000, name);
                     break;
 
                 // ==============================================================
@@ -371,29 +373,27 @@ namespace ContentWarningArchipelago.Data
         }
 
         /// <summary>
-        /// Grants Meta Coins via <c>MetaProgressionHandler.AddMetaCoins()</c>.
-        /// That method automatically shows the in-game money popup and saves to disk.
-        /// Falls back to the pending queue if the singleton isn't ready.
+        /// Grants Meta Coins by sending a delta op to the lobby-shared
+        /// <c>CW_MetaCoins_{slot}</c> AP DataStorage key.  Only the master
+        /// client writes to the key; non-master clients still show the HUD
+        /// notification (the item arrived for the whole lobby) and rely on
+        /// the OnValueChanged listener in <see cref="ArchipelagoClient"/> to
+        /// update their local MC field.
         /// </summary>
         private static void GrantMetaCoins(int amount, string itemName)
         {
-            try
-            {
-                // Direct static call — mirrors MetaProgressionHandler's own AddMetaCoins
-                // which also calls UserInterface.ShowMoneyNotification internally.
-                MetaProgressionHandler.AddMetaCoins(amount);
-                Plugin.Logger.LogInfo($"[ItemData] Granted {amount} Meta Coins.");
-            }
-            catch (System.Exception ex)
-            {
-                Plugin.Logger.LogWarning(
-                    $"[ItemData] MetaProgressionHandler.AddMetaCoins failed: {ex.Message}. Queuing.");
-                APSave.saveData.pendingMetaCoins += amount;
-                APSave.Flush();
+            APNotificationUI.ShowMoneyReceived("AP Meta Coins", amount,
+                MoneyCellUI.MoneyCellType.MetaCoins);
 
-                // Show fallback notification.
-                APNotificationUI.ShowMoneyReceived("AP Meta Coins", amount,
-                    MoneyCellUI.MoneyCellType.MetaCoins);
+            if (PhotonNetwork.IsMasterClient)
+            {
+                Plugin.connection.AddMetaCoinsDelta(amount);
+                Plugin.Logger.LogInfo($"[ItemData] Granted {amount} Meta Coins via DataStorage.");
+            }
+            else
+            {
+                Plugin.Logger.LogDebug(
+                    $"[ItemData] Non-master client — {amount} MC will arrive via DS listener.");
             }
         }
 
