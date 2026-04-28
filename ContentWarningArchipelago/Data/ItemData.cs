@@ -46,6 +46,7 @@ namespace ContentWarningArchipelago.Data
         public const int OffsetRescueHook        = 10;
         public const int OffsetShockStick        = 11;
         public const int OffsetDefibrillator     = 12;
+        public const int OffsetMoneyTiny         = 19;   // $50 — added in issue #3 economy overhaul
         public const int OffsetMoneySmall        = 20;
         public const int OffsetMoneyMedium       = 21;
         public const int OffsetMoneyLarge        = 22;
@@ -72,6 +73,7 @@ namespace ContentWarningArchipelago.Data
             Register(OffsetRescueHook,        ItemNames.RescueHook);
             Register(OffsetShockStick,        ItemNames.ShockStick);
             Register(OffsetDefibrillator,     ItemNames.Defibrillator);
+            Register(OffsetMoneyTiny,         ItemNames.MoneyTiny);
             Register(OffsetMoneySmall,        ItemNames.MoneySmall);
             Register(OffsetMoneyMedium,       ItemNames.MoneyMedium);
             Register(OffsetMoneyLarge,        ItemNames.MoneyLarge);
@@ -269,12 +271,16 @@ namespace ContentWarningArchipelago.Data
                 // pendingMoney which MoneyPatch drains on the next InitShop.
                 //
                 // Amounts match items.py exactly:
-                //   $100 (offset 20), $200 (offset 21), $300 (offset 22), $400 (offset 23)
+                //   $50  (offset 19), $100 (offset 20), $200 (offset 21),
+                //   $300 (offset 22), $400 (offset 23)
                 //
                 // HOST PRIORITY: Only the master client applies money grants.
                 // Non-master clients skip these entirely to prevent doubling the
                 // shared wallet when all players receive the same AP item.
                 // ==============================================================
+                case ItemNames.MoneyTiny:    // $50 — ID 98765019
+                    if (PhotonNetwork.IsMasterClient) GrantMoney(50, name, senderName);
+                    break;
                 case ItemNames.MoneySmall:   // $100 — ID 98765020
                     if (PhotonNetwork.IsMasterClient) GrantMoney(100, name, senderName);
                     break;
