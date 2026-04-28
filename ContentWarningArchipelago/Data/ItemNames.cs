@@ -27,9 +27,12 @@ namespace ContentWarningArchipelago.Data
         public const string Defibrillator = "Defibrillator";
 
         // ---- Money ($) — filler ----
-        // Names match item_names.py exactly: $100 / $200 / $300 / $400
+        // Names match item_names.py exactly: $50 / $100 / $200 / $300 / $400
         // The values represent the nominal dollar amount shown to the player.
         // In-game the amounts are granted 1-to-1 (i.e. $100 → +$100 in lobby wallet).
+        // $300 is preserved for cheat-console compatibility but is no longer in the
+        // generated pool (apworld removed it from MONEY_FILLER_POOL in issue #3).
+        public const string MoneyTiny   = "$50";    // offset 19 — ID 98765019
         public const string MoneySmall  = "$100";   // offset 20 — ID 98765020
         public const string MoneyMedium = "$200";   // offset 21 — ID 98765021
         public const string MoneyLarge  = "$300";   // offset 22 — ID 98765022
