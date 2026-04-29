@@ -6,6 +6,7 @@ using System;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Reflection;
 using System.Threading.Tasks;
 using Archipelago.MultiClient.Net;
 using Archipelago.MultiClient.Net.Enums;
@@ -14,10 +15,12 @@ using Archipelago.MultiClient.Net.Models;
 using Archipelago.MultiClient.Net.Packets;
 using ContentWarningArchipelago.Data;
 using ContentWarningArchipelago.UI;
+using HarmonyLib;
 using MyceliumNetworking;
 using Photon.Pun;
 using Photon.Realtime;
 using UnityEngine;
+using Zorro.Core;
 
 namespace ContentWarningArchipelago.Core
 {
@@ -49,6 +52,32 @@ namespace ContentWarningArchipelago.Core
 
         /// <summary>Location IDs queued to be sent to the server.</summary>
         private ConcurrentQueue<long> _pendingChecks = new();
+
+        /// <summary>The DataStorage key (Slot scope) that holds the lobby-shared
+        /// Meta Coin balance for this AP slot.  Empty when disconnected.
+        /// See <see cref="InitMetaCoinsDataStorage"/> for the bootstrap flow.</summary>
+        public string MetaCoinsKey { get; private set; } = string.Empty;
+
+        /// <summary>Cached DataStorageElement so the OnValueChanged handler
+        /// can be unhooked on disconnect (the indexer returns a fresh element
+        /// each call, so we must keep the same reference we subscribed on).</summary>
+        private DataStorageElement? _metaCoinsElement;
+
+        /// <summary>The Delegate we registered on
+        /// <see cref="DataStorageElement.OnValueChanged"/>.  Stored as a
+        /// non-generic <see cref="Delegate"/> because the event's delegate
+        /// signature uses Newtonsoft.Json.Linq.JToken — a type defined in
+        /// an assembly version (11.0.0.0) that we deliberately avoid
+        /// spelling in this project's compile units to dodge a NuGet
+        /// version conflict between AP.MultiClient.Net and CW.GameLibs.Steam.
+        /// We build the handler via reflection in
+        /// <see cref="InitMetaCoinsDataStorage"/> instead.</summary>
+        private Delegate? _metaCoinsHandler;
+
+        /// <summary>Reflection handle for <c>MetaProgressionHandler.metaCoins</c>
+        /// (private int).  Set on first use; reused for every DS-driven write
+        /// so the per-frame UI poll picks up the new balance immediately.</summary>
+        private static FieldInfo? _metaCoinsField;
 
         // ================================================================== CONNECTION
 
@@ -126,6 +155,9 @@ namespace ContentWarningArchipelago.Core
                 checkItemsReceived  = CheckItemsReceived();
                 incomingItemHandler = IncomingItemHandler();
                 outgoingCheckHandler = OutgoingCheckHandler();
+
+                // ---- Bind the lobby-shared Meta Coins DataStorage key ----
+                InitMetaCoinsDataStorage();
             }
             else
             {
@@ -145,6 +177,17 @@ namespace ContentWarningArchipelago.Core
         {
             try
             {
+                // Drop the Meta Coins DS listener before tearing the session
+                // down — the OnValueChanged delegate captures `this`, so a
+                // dangling subscription would keep us alive across reconnects.
+                if (_metaCoinsElement != null && _metaCoinsHandler != null)
+                {
+                    UnsubscribeMetaCoinsListener(_metaCoinsElement, _metaCoinsHandler);
+                }
+                _metaCoinsElement = null;
+                _metaCoinsHandler = null;
+                MetaCoinsKey      = string.Empty;
+
                 if (session != null)
                 {
                     _ = session.Socket.DisconnectAsync();
@@ -329,6 +372,267 @@ namespace ContentWarningArchipelago.Core
 
         public string GetItemName(long id) =>
             session?.Items.GetItemName(id) ?? ItemData.GetName(id);
+
+        // ================================================================== META COINS (DataStorage)
+
+        /// <summary>
+        /// Set up the lobby-shared Meta Coin balance.  Called once after a
+        /// successful login (per <see cref="TryConnect"/>).
+        ///
+        /// <para>
+        /// All clients in the lobby share a single AP slot, so they all bind
+        /// to the same <c>CW_MetaCoins_{slot}</c> key.  Calling
+        /// <see cref="DataStorageElement.Initialize(JToken)"/> from every
+        /// client is safe — AP only writes the default if the key is absent.
+        /// First-join therefore lands at 0 (overriding the player's vanilla
+        /// MC balance), and subsequent connects pull whatever the lobby has
+        /// spent or accumulated so far.
+        /// </para>
+        ///
+        /// <para>
+        /// We subscribe <see cref="OnMetaCoinsChanged"/> on the cached
+        /// element so we can <em>unhook</em> in <see cref="TryDisconnect"/>;
+        /// the helper indexer returns a fresh <see cref="DataStorageElement"/>
+        /// each call, so unsubscribing from a different instance would be
+        /// a no-op.
+        /// </para>
+        /// </summary>
+        private void InitMetaCoinsDataStorage()
+        {
+            if (session == null) return;
+
+            try
+            {
+                int slot = session.ConnectionInfo.Slot;
+                MetaCoinsKey = $"CW_MetaCoins_{slot}";
+
+                _metaCoinsElement = session.DataStorage[Scope.Slot, MetaCoinsKey];
+
+                // Default-on-first-connect failsafe: 0 if the key was never set.
+                // Initialize's only overloads take JToken/IEnumerable, which
+                // would drag a JToken type reference into our compile units;
+                // invoke it reflectively against the JToken overload instead
+                // (the value is wrapped via JToken's implicit-from-int operator).
+                InitializeWithZero(_metaCoinsElement);
+
+                // Subscribe before reading so we never miss an in-flight write.
+                // The event delegate signature contains JToken from
+                // Newtonsoft.Json v11.0.0.0; we build the handler reflectively
+                // to avoid pulling JToken into our compile units.  See
+                // <see cref="_metaCoinsHandler"/>.
+                _metaCoinsHandler = SubscribeMetaCoinsListener(_metaCoinsElement);
+
+                // Read the current authoritative value and apply it locally.
+                // Using the synchronous int conversion is safe because we just
+                // ensured the key exists via Initialize() above.
+                int current = _metaCoinsElement.To<int>();
+                ApplyMetaCoinsLocally(current);
+
+                Plugin.Logger.LogInfo(
+                    $"[AP] Meta Coins DataStorage bound to '{MetaCoinsKey}' (current value: {current}).");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogError(
+                    $"[AP] Failed to initialise Meta Coins DataStorage: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Build a delegate matching <c>DataStorageElement.OnValueChanged</c>'s
+        /// signature via reflection and register it on the given element.
+        /// Returns the <see cref="Delegate"/> so callers can unhook on
+        /// disconnect.  All access to the JToken parameters happens through
+        /// runtime binding (<c>dynamic</c>), so no compile-time reference to
+        /// Newtonsoft.Json is needed.
+        /// </summary>
+        private Delegate SubscribeMetaCoinsListener(DataStorageElement element)
+        {
+            var eventInfo = typeof(DataStorageElement).GetEvent(
+                nameof(DataStorageElement.OnValueChanged),
+                BindingFlags.Public | BindingFlags.Instance)
+                ?? throw new InvalidOperationException(
+                    "DataStorageElement.OnValueChanged event not found");
+
+            var handlerType = eventInfo.EventHandlerType
+                ?? throw new InvalidOperationException(
+                    "DataStorageElement.OnValueChanged has no delegate type");
+
+            // Bind to our private callback method that takes (object, object, object).
+            var callback = AccessTools.Method(typeof(ArchipelagoClient), nameof(MetaCoinsValueChanged));
+
+            // Delegate.CreateDelegate validates that the bound method is
+            // assignable to the event's delegate; reference types collapse
+            // to object via inheritance, so JToken/Dictionary parameters
+            // pass through fine.
+            var del = Delegate.CreateDelegate(handlerType, this, callback);
+            eventInfo.AddEventHandler(element, del);
+            return del;
+        }
+
+        /// <summary>
+        /// Reflectively call <c>DataStorageElement.Initialize(JToken)</c> with
+        /// the int 0.  We resolve the JToken overload by name + parameter
+        /// count and rely on the runtime to perform the int → JToken
+        /// implicit conversion via <c>Convert.ChangeType</c>.  Falls back to
+        /// passing the boxed int directly if the runtime accepts it.
+        /// </summary>
+        private static void InitializeWithZero(DataStorageElement element)
+        {
+            // Find the JToken overload (the IEnumerable one would crash on a
+            // boxed int — int is not IEnumerable).  Both have the same name
+            // and arity, so pick the one whose param type is *not* IEnumerable.
+            MethodInfo? jtokenOverload = null;
+            foreach (var m in typeof(DataStorageElement).GetMethods(
+                BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (m.Name != "Initialize") continue;
+                var ps = m.GetParameters();
+                if (ps.Length != 1) continue;
+                // Reject the IEnumerable overload by name.
+                if (ps[0].ParameterType.FullName == "System.Collections.IEnumerable") continue;
+                jtokenOverload = m;
+                break;
+            }
+
+            if (jtokenOverload == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[AP] DataStorageElement.Initialize(JToken) not found — first-join failsafe skipped.");
+                return;
+            }
+
+            // Invoke a JToken's implicit operator from int to wrap 0 without
+            // referencing JToken in our compile units.
+            var jtokenType = jtokenOverload.GetParameters()[0].ParameterType;
+            var implicitOp = jtokenType.GetMethod(
+                "op_Implicit",
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                types: new[] { typeof(int) },
+                modifiers: null);
+
+            if (implicitOp == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[AP] JToken.op_Implicit(int) not found — first-join failsafe skipped.");
+                return;
+            }
+
+            object zeroToken = implicitOp.Invoke(null, new object[] { 0 })!;
+            jtokenOverload.Invoke(element, new[] { zeroToken });
+        }
+
+        private void UnsubscribeMetaCoinsListener(DataStorageElement element, Delegate handler)
+        {
+            try
+            {
+                var eventInfo = typeof(DataStorageElement).GetEvent(
+                    nameof(DataStorageElement.OnValueChanged),
+                    BindingFlags.Public | BindingFlags.Instance);
+                eventInfo?.RemoveEventHandler(element, handler);
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogDebug(
+                    $"[AP] Unhooking Meta Coins listener failed (best-effort): {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Send a delta to the lobby's shared Meta Coins key.  Only the master
+        /// client should call this for AP-item-driven grants and for hat
+        /// purchases — all other clients receive the change via the
+        /// <see cref="OnMetaCoinsChanged"/> listener.
+        /// </summary>
+        public void AddMetaCoinsDelta(int amount)
+        {
+            if (!connected || _metaCoinsElement == null)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[AP] AddMetaCoinsDelta({amount}) called while disconnected — dropping.");
+                return;
+            }
+
+            try
+            {
+                // Use a fresh element for the math op — chaining operators on
+                // our cached element would mutate the variable that holds the
+                // listener subscription.  The cached element is for read /
+                // unsubscribe only.
+                session!.DataStorage[Scope.Slot, MetaCoinsKey] += amount;
+                Plugin.Logger.LogInfo(
+                    $"[AP] DataStorage Meta Coins {(amount >= 0 ? "+" : "")}{amount} → '{MetaCoinsKey}'.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogError(
+                    $"[AP] AddMetaCoinsDelta({amount}) failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Reflection-bound listener for the lobby's Meta Coins key.  Bound
+        /// to <c>DataStorageElement.OnValueChanged</c> via
+        /// <see cref="SubscribeMetaCoinsListener"/>; the runtime supplies the
+        /// real arguments (<c>JToken originalValue, JToken newValue,
+        /// Dictionary&lt;string, JToken&gt; additionalArguments</c>) and we
+        /// read them via <c>dynamic</c> dispatch so the JToken type never
+        /// appears in our compile units.
+        /// </summary>
+        private void MetaCoinsValueChanged(object originalValue, object newValue, object additionalArguments)
+        {
+            try
+            {
+                // JToken implements IConvertible — Convert.ToInt32 walks the
+                // IConvertible interface at runtime, so we can extract the
+                // numeric value without spelling JToken in our compile units.
+                int newInt = Convert.ToInt32(newValue);
+                ApplyMetaCoinsLocally(newInt);
+                Plugin.Logger.LogInfo(
+                    $"[AP] Meta Coins synced from server: {originalValue} → {newInt}.");
+            }
+            catch (Exception ex)
+            {
+                Plugin.Logger.LogError(
+                    $"[AP] MetaCoinsValueChanged handler failed: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Reflection-write the private <c>metaCoins</c> field on the singleton.
+        /// We cannot call <c>SetMetaCoins</c> here because that triggers
+        /// <c>UpdateAndSave</c>, which would persist the AP balance to the
+        /// player's vanilla save file — defeating the whole point of this
+        /// patch.  (Even though <c>UpdateAndSave</c> is also Harmony-patched
+        /// to skip in AP mode, going around it directly is safer and avoids
+        /// the cost of building a <c>SerializedMetaProgression</c> on every
+        /// listener tick.)
+        /// </summary>
+        private static void ApplyMetaCoinsLocally(int value)
+        {
+            if (_metaCoinsField == null)
+            {
+                _metaCoinsField = AccessTools.Field(typeof(MetaProgressionHandler), "metaCoins");
+                if (_metaCoinsField == null)
+                {
+                    Plugin.Logger.LogWarning(
+                        "[AP] MetaProgressionHandler.metaCoins field not found — " +
+                        "Meta Coins HUD will not reflect AP balance.");
+                    return;
+                }
+            }
+
+            var instance = RetrievableSingleton<MetaProgressionHandler>.Instance;
+            if (instance == null)
+            {
+                Plugin.Logger.LogDebug(
+                    "[AP] MetaProgressionHandler not yet instantiated — Meta Coins write deferred.");
+                return;
+            }
+
+            _metaCoinsField.SetValue(instance, value);
+        }
 
         // ================================================================== SCOUTING
 
