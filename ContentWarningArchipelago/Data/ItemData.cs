@@ -43,6 +43,7 @@ namespace ContentWarningArchipelago.Data
         public const int OffsetDivingBellCharger = 3;
         public const int OffsetProgViews         = 4;
         public const int OffsetProgStamina       = 5;
+        public const int OffsetProgStaminaRegen  = 6;
         public const int OffsetRescueHook        = 10;
         public const int OffsetShockStick        = 11;
         public const int OffsetDefibrillator     = 12;
@@ -70,6 +71,7 @@ namespace ContentWarningArchipelago.Data
             Register(OffsetDivingBellCharger, ItemNames.DivingBellCharger);
             Register(OffsetProgViews,         ItemNames.ProgViews);
             Register(OffsetProgStamina,       ItemNames.ProgStamina);
+            Register(OffsetProgStaminaRegen,  ItemNames.ProgStaminaRegen);
             Register(OffsetRescueHook,        ItemNames.RescueHook);
             Register(OffsetShockStick,        ItemNames.ShockStick);
             Register(OffsetDefibrillator,     ItemNames.Defibrillator);
@@ -225,6 +227,24 @@ namespace ContentWarningArchipelago.Data
                     Plugin.Logger.LogInfo(
                         $"[ItemData] Progressive Stamina level {APSave.saveData.staminaUpgradeLevel} — " +
                         $"maxStamina {100 + APSave.saveData.staminaUpgradeLevel * 25}.");
+                    break;
+                }
+
+                // ==============================================================
+                // PROGRESSIVE STAMINA REGEN
+                // StaminaRegenUpgradePatch reads staminaRegenUpgradeLevel every
+                // PlayerController.Update — the new level takes effect on the
+                // next frame without any explicit sync step.
+                // ==============================================================
+                case ItemNames.ProgStaminaRegen:
+                {
+                    APSave.saveData.staminaRegenUpgradeLevel++;
+                    APSave.Flush();
+                    APNotificationUI.ShowItemReceived(name, senderName);
+                    Plugin.Logger.LogInfo(
+                        $"[ItemData] Progressive Stamina Regen level " +
+                        $"{APSave.saveData.staminaRegenUpgradeLevel} — " +
+                        $"regen × {1f + 0.5f * APSave.saveData.staminaRegenUpgradeLevel:0.##}.");
                     break;
                 }
 

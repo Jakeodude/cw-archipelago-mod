@@ -1,5 +1,6 @@
 // Patches/ProgressionStatsPatch.cs
-// Applies Progressive Stamina and Progressive Camera upgrades via Harmony Postfixes.
+// Applies Progressive Stamina, Progressive Stamina Regen, and Progressive
+// Camera upgrades via Harmony Postfixes.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // STAMINA — StaminaUpgradePatch
@@ -16,6 +17,28 @@
 //   Formula : maxStamina = 100 + staminaUpgradeLevel × 25
 //   Sync    : ProgressionStatsPatch.ApplyStaminaUpgrade(level) re-applies to the
 //             live local player when an item arrives mid-game.
+//
+// ─────────────────────────────────────────────────────────────────────────────
+// STAMINA REGEN — StaminaRegenUpgradePatch
+//   Target : PlayerController.Update (Postfix)
+//
+//   WHY PlayerController.Update (and not a field write):
+//   PlayerController declares `public float staminaRegRate = 2f;` but it is
+//   never read — the actual regen formula is hardcoded inside Update as
+//   `currentStamina = Mathf.MoveTowards(currentStamina, maxStamina, Time.deltaTime)`,
+//   gated on `data.sinceSprint > 1f`.  Writing to `staminaRegRate` is a no-op,
+//   so we instead Postfix Update with the same gating and add an extra
+//   `0.5 × level × Time.deltaTime` of stamina per frame.  Combined with the
+//   vanilla addition, total regen per second = base × (1 + 0.5 × level), which
+//   matches the issue's `BaseRegenRate × (1 + 0.5 × StaminaRegenLevel)` formula
+//   exactly (level 1 = 150 %, level 2 = 200 %).
+//
+//   Local player only: remote players' stamina is server-authoritative; their
+//   regen is owned by their own client.
+//
+//   No sync helper: regen is continuous, so the new level takes effect on the
+//   next frame after staminaRegenUpgradeLevel is incremented — no day restart
+//   or mid-game reapplication step is needed.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // CAMERA — CameraUpgradePatch
@@ -75,6 +98,44 @@ namespace ContentWarningArchipelago.Patches
             Plugin.Logger.LogInfo(
                 $"[StaminaUpgradePatch] Player.Awake — maxStamina set to {newMax} " +
                 $"(level {level}). PlayerController.Start will initialise currentStamina.");
+        }
+    }
+
+    // =========================================================================
+    // STAMINA REGEN UPGRADE PATCH
+    // =========================================================================
+
+    /// <summary>
+    /// Postfix on <c>PlayerController.Update</c>.  Adds extra stamina regen each
+    /// frame so the per-second rate becomes <c>base × (1 + 0.5 × level)</c>.
+    /// Mirrors the vanilla regen gating (only after <c>sinceSprint &gt; 1f</c>,
+    /// only while below max) and runs only for the local player.
+    /// </summary>
+    [HarmonyPatch(typeof(PlayerController), "Update")]
+    internal static class StaminaRegenUpgradePatch
+    {
+        [HarmonyPostfix]
+        private static void Postfix(PlayerController __instance)
+        {
+            if (!Plugin.connection.connected) return;
+
+            int level = APSave.saveData.staminaRegenUpgradeLevel;
+            if (level <= 0) return;
+
+            // Only apply to the local player — remote players' stamina is
+            // owned by their own client.
+            if (Player.localPlayer == null) return;
+            if (Player.localPlayer.GetComponent<PlayerController>() != __instance) return;
+
+            var data = Player.localPlayer.data;
+            if (data == null) return;
+
+            // Match vanilla gating (PlayerController.Update body).
+            if (data.sinceSprint <= 1f) return;
+            if (data.currentStamina >= __instance.maxStamina) return;
+
+            float extra = 0.5f * level * Time.deltaTime;
+            data.currentStamina = Mathf.Min(__instance.maxStamina, data.currentStamina + extra);
         }
     }
 
