@@ -337,7 +337,7 @@ namespace ContentWarningArchipelago.Data
                 {
                     Plugin.Logger.LogInfo("[ItemData] Activating Ragdoll Trap.");
                     APNotificationUI.ShowItemReceived("⚠ Ragdoll Trap!", senderName);
-                    TrapHandler.ApplyRagdollTrap(5f);
+                    TrapHandler.ApplyRagdollTrap(10f);
                     break;
                 }
 
