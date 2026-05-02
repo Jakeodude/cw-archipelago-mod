@@ -1,8 +1,13 @@
 // Patches/TrapPatches.cs
 // Implements the two AP trap items:
 //
-//   • Ragdoll Trap  — ragdolls the local player for 5 s.
-//   • Monster Spawn — spawns a random monster near the local player's position.
+//   • Ragdoll Trap   — ragdolls the local player for 10 s.
+//   • Monster Spawn  — spawns a random monster at a remote, line-of-sight-clear
+//                      PatrolPoint, then ~3-5 s later calls the vanilla
+//                      teleport-closer routine (Bot.Teleport →
+//                      Level.GetClosestHiddenPoint near the recipient) so the
+//                      monster ambushes naturally instead of materialising on
+//                      the player.
 //
 // NETWORKING MODEL
 // Ragdoll Trap:
@@ -13,22 +18,23 @@
 //   their own local player the moment the item is received.
 //
 // Monster Spawn Trap:
-//   Calls MonsterSpawner.SpawnMonster(prefabName, position) which internally
-//   calls HelperFunctions.GetGroundPos + PhotonNetwork.Instantiate.
-//   PhotonNetwork.Instantiate may be called from any connected client;
-//   the spawned object's Bot component self-registers with BotHandler.instance
-//   in Bot.Start(), so BotHandler tracks it automatically.
-//   Position = Player.localPlayer.Center() + random horizontal offset.
+//   PhotonNetwork.Instantiate may be called from any connected client; the
+//   recipient becomes the spawned PhotonView's owner.  The spawned object's
+//   Bot component self-registers with BotHandler.instance in Bot.Start().
+//   No master-client guard on the teleport step — the recipient owns the
+//   bot and per-bot Teleport() implementations propagate via Photon transform
+//   sync (vanilla pattern, mirrors Puppetmonster.Intervene's call site).
 //
 //   GUARD: Monsters may only be spawned while players are underground
-//   (SurfaceNetworkHandler.Instance.IsOldWorld == true).  If the item arrives
-//   while the team is still on the surface, the spawn is DEFERRED via a Unity
-//   coroutine (WaitUntil) until the player enters the old world.  The spawn
-//   command is never silently discarded.
+//   (SurfaceNetworkHandler.Instance == null).  If the item arrives while
+//   the team is still on the surface, the spawn is DEFERRED via a Unity
+//   coroutine until the player enters the old world; the spawn command is
+//   never silently discarded.
 
-using System;
 using System.Collections;
+using System.Reflection;
 using ContentWarningArchipelago.Core;
+using HarmonyLib;
 using Photon.Pun;
 using UnityEngine;
 
@@ -39,17 +45,15 @@ namespace ContentWarningArchipelago.Patches
     /// </summary>
     public static class TrapHandler
     {
-        // ── Monster prefab names ─────────────────────────────────────────────
-        // These must match the Unity resource / Photon resource folder names
-        // exactly (case-sensitive). Names taken from item_notes.md.
-        // "Spawn 3 Zombe" is represented as a higher-weight "Zombe" entry;
-        // triple-spawning can be added as a future enhancement.
+        // Monster prefab names — must match the Photon prefab pool registration
+        // exactly (case-sensitive). "Spawn 3 Zombe" is approximated as a
+        // double-weighted "Zombe" entry; triple-spawning is a future enhancement.
         private static readonly string[] MonsterPrefabNames =
         {
             "Arms",
             "Bomber",
-            "Zombe",        // item_notes.md spells it "Zombe", not "Zombie"
-            "Zombe",        // "Spawn 3 Zombe" — weighted double entry for now
+            "Zombe",
+            "Zombe",
             "Whisk",
             "Eye Guy",
             "Knifo",
@@ -58,8 +62,18 @@ namespace ContentWarningArchipelago.Patches
             "Puffo",
         };
 
-        // Radius (Unity units) of the random horizontal spawn offset from the player.
-        private const float SpawnOffsetRadius = 5f;
+        // Random horizontal offset radius used as a last-resort fallback when
+        // no PatrolPoint is reachable in the level (Unity units).
+        private const float FallbackSpawnOffsetRadius = 5f;
+
+        // Reflection cache: Bot.Teleport(Vector3) and Level.GetClosestHiddenPoint
+        // are both `internal`, so they can't be called directly from this
+        // assembly.  AccessTools resolves them by name; missing methods log a
+        // warning and we silently degrade (the trap still spawns, just without
+        // the teleport-closer step).
+        private static MethodInfo? _botTeleport;
+        private static MethodInfo? _getClosestHiddenPoint;
+        private static bool _reflectionInitialised;
 
         // ================================================================== Ragdoll Trap
 
@@ -68,7 +82,7 @@ namespace ContentWarningArchipelago.Patches
         /// <c>PlayerRagdoll.Fall</c> directly on <c>Player.localPlayer</c>.
         /// Works on any client — no master-client restriction required.
         /// </summary>
-        public static void ApplyRagdollTrap(float duration = 5f)
+        public static void ApplyRagdollTrap(float duration = 10f)
         {
             var local = Player.localPlayer;
             if ((object)local == null)
@@ -83,10 +97,6 @@ namespace ContentWarningArchipelago.Patches
                 return;
             }
 
-            // Fall(duration) sets player.data.fallTime = duration (if greater than
-            // the current value), making player.Ragdoll() return true.
-            // PlayerData.UpdateValues_Fixed() decrements fallTime every FixedUpdate
-            // so the effect expires automatically — no cleanup coroutine needed.
             local.refs.ragdoll.Fall(duration);
             Plugin.Logger.LogInfo($"[TrapHandler] RagdollTrap: applied Fall({duration}s) to local player.");
         }
@@ -94,15 +104,8 @@ namespace ContentWarningArchipelago.Patches
         // ================================================================== Monster Spawn Trap
 
         /// <summary>
-        /// Spawns a random monster near the local player's current position.
-        /// Uses <c>MonsterSpawner.SpawnMonster</c> which handles ground-snapping
-        /// via <c>HelperFunctions.GetGroundPos</c> and <c>PhotonNetwork.Instantiate</c>.
-        /// The spawned monster's <c>Bot</c> component self-registers with
-        /// <c>BotHandler.instance</c> in <c>Bot.Start()</c>.
-        ///
-        /// GUARD: If the local player is not yet in the old world (underground),
-        /// the spawn is deferred via a <c>WaitUntil</c> coroutine started on
-        /// <c>Plugin.Instance</c>.  The spawn is never silently cancelled.
+        /// Spawns a random monster at a remote line-of-sight-clear PatrolPoint
+        /// and schedules a vanilla-style teleport-closer ambush.
         /// </summary>
         public static void ApplyMonsterSpawnTrap()
         {
@@ -119,12 +122,8 @@ namespace ContentWarningArchipelago.Patches
                 return;
             }
 
-            // Guard: monsters only exist in the old world (underground scene).
-            // SurfaceNetworkHandler.Instance is non-null only while the surface scene is
-            // loaded.  When players transition underground, the surface scene unloads and
-            // Instance becomes null — that null state means "we are in the old world".
-            // If we are still on the surface (Instance != null), defer the spawn via a
-            // WaitUntil coroutine so the command is never silently discarded.
+            // Defer if still on the surface — old-world transition unloads the
+            // surface scene and SurfaceNetworkHandler.Instance becomes null.
             if (SurfaceNetworkHandler.Instance != null)
             {
                 Plugin.Logger.LogInfo(
@@ -139,18 +138,10 @@ namespace ContentWarningArchipelago.Patches
 
         // ================================================================== Deferred spawn coroutine
 
-        /// <summary>
-        /// Waits until the surface scene has unloaded (i.e. <c>SurfaceNetworkHandler.Instance</c>
-        /// becomes <c>null</c>), which signals that the player has transitioned underground
-        /// into the old world.  Then executes the monster spawn.
-        /// Started on <c>Plugin.Instance</c> so it survives scene transitions.
-        /// </summary>
         private static IEnumerator WaitForOldWorldThenSpawn()
         {
             Plugin.Logger.LogInfo("[TrapHandler] MonsterSpawn (deferred): waiting for old world…");
 
-            // SurfaceNetworkHandler.Instance is null only when the surface scene is not loaded,
-            // meaning players have transitioned underground into the old world.
             yield return new WaitUntil(() => SurfaceNetworkHandler.Instance == null);
 
             var local = Player.localPlayer;
@@ -170,63 +161,216 @@ namespace ContentWarningArchipelago.Patches
         // ================================================================== Core spawn logic
 
         /// <summary>
-        /// Picks a random monster from <see cref="MonsterPrefabNames"/>, applies a
-        /// random horizontal offset from <paramref name="local"/>'s position, and calls
-        /// <c>MonsterSpawner.SpawnMonster</c> which handles ground-snapping and
-        /// <c>PhotonNetwork.Instantiate</c>.
+        /// Picks a random monster, finds a remote LOS-clear PatrolPoint to
+        /// spawn it at, instantiates via <c>MonsterSpawner.SpawnMonster</c>
+        /// (which handles ground-snapping), and schedules a teleport-closer
+        /// ambush after a short delay.  Falls back to player.Center() + offset
+        /// if no PatrolPoints are reachable, and skips the teleport step if
+        /// reflection lookup of the internal vanilla methods failed.
         /// </summary>
         private static void ExecuteMonsterSpawn(Player local)
         {
-            // Pick a random monster from the weighted list.
             int idx = UnityEngine.Random.Range(0, MonsterPrefabNames.Length);
             string chosenMonster = MonsterPrefabNames[idx];
 
-            // Random horizontal offset; Y zeroed — MonsterSpawner snaps to ground internally.
-            Vector2 circle = UnityEngine.Random.insideUnitCircle * SpawnOffsetRadius;
-            Vector3 spawnPos = local.Center() + new Vector3(circle.x, 0f, circle.y);
-
-            // Guard: BotHandler.instance may be null if the old-world scene is still
-            // initialising — Bot.Start() calls BotHandler.instance.bots.Add(this) which
-            // throws a NullReferenceException if BotHandler hasn't awakened yet.
-            // Defer by 2 s to allow the scene to finish initialising, then retry.
+            // Bot.Start() calls BotHandler.instance.bots.Add(this) — that NREs
+            // if the old-world scene is still finishing init.  Retry after 2 s.
             if (BotHandler.instance == null)
             {
                 Plugin.Logger.LogWarning(
                     $"[TrapHandler] MonsterSpawn: BotHandler.instance is null — " +
                     $"retrying '{chosenMonster}' in 2 s.");
-                Plugin.Instance.StartCoroutine(RetrySpawnAfterDelay(local, chosenMonster, spawnPos, 2f));
+                Plugin.Instance.StartCoroutine(RetrySpawnAfterDelay(local, chosenMonster, 2f));
                 return;
             }
 
-            Plugin.Logger.LogInfo(
-                $"[TrapHandler] MonsterSpawn: spawning '{chosenMonster}' " +
-                $"near {local.refs.view.Controller.NickName} at {spawnPos}.");
+            Vector3 spawnPos = ChooseRemoteSpawnPosition(local);
 
+            Plugin.Logger.LogInfo(
+                $"[TrapHandler] MonsterSpawn: spawning '{chosenMonster}' at {spawnPos} " +
+                $"(targeting {local.refs.view.Controller.NickName}).");
+
+            GameObject? spawned;
             try
             {
-                // MonsterSpawner.SpawnMonster(string monster, Vector3 position) calls
-                //   HelperFunctions.GetGroundPos(position + Vector3.up, ...)
-                //   PhotonNetwork.Instantiate(monster, groundPos, identity, 0)
-                // Any connected Photon client may call PhotonNetwork.Instantiate.
-                // The spawned GameObject's Bot.Start() adds itself to BotHandler.instance.bots.
-                MonsterSpawner.SpawnMonster(chosenMonster, spawnPos);
+                spawned = MonsterSpawner.SpawnMonster(chosenMonster, spawnPos);
             }
-            catch (Exception ex)
+            catch (System.Exception ex)
             {
                 Plugin.Logger.LogWarning(
                     $"[TrapHandler] MonsterSpawn failed for '{chosenMonster}': {ex.Message}");
+                return;
+            }
+
+            if (spawned == null)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn: SpawnMonster returned null for '{chosenMonster}' — " +
+                    $"skipping teleport-closer step.");
+                return;
+            }
+
+            var bot = spawned.GetComponent<Bot>() ?? spawned.GetComponentInChildren<Bot>();
+            if (bot == null)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn: spawned '{chosenMonster}' has no Bot component — " +
+                    $"skipping teleport-closer step.");
+                return;
+            }
+
+            float delay = UnityEngine.Random.Range(3f, 5f);
+            Plugin.Instance.StartCoroutine(TeleportCloserAfterDelay(bot, delay, chosenMonster));
+        }
+
+        // ================================================================== Spawn-position picker
+
+        /// <summary>
+        /// Returns a random PatrolPoint position in the current level whose
+        /// transform is not visible to any alive player (≈100-attempt random
+        /// sample, mirroring <c>RoundSpawner.SpawnMonstersOutOfSight</c>).
+        /// Falls back to the player's center + horizontal offset when no
+        /// PatrolPoints are reachable (very early scene init, or unusual map).
+        /// </summary>
+        private static Vector3 ChooseRemoteSpawnPosition(Player local)
+        {
+            var allPoints = Object.FindObjectsOfType<PatrolPoint>();
+            if (allPoints == null || allPoints.Length == 0)
+            {
+                Plugin.Logger.LogWarning(
+                    "[TrapHandler] MonsterSpawn: no PatrolPoints found — falling back to player-relative spawn.");
+                return PlayerCenteredFallback(local);
+            }
+
+            const int maxAttempts = 100;
+            for (int i = 0; i < maxAttempts; i++)
+            {
+                var candidate = allPoints[UnityEngine.Random.Range(0, allPoints.Length)];
+                if (candidate == null) continue;
+
+                Vector3 pos = candidate.transform.position;
+                if (PlayerHandler.instance == null ||
+                    !PlayerHandler.instance.CanAnAlivePlayerSeePoint(pos, out _))
+                {
+                    return pos;
+                }
+            }
+
+            // No LOS-clear point in 100 attempts — take any point (mirrors
+            // RoundSpawner's fallback).
+            var anyPoint = allPoints[UnityEngine.Random.Range(0, allPoints.Length)];
+            if (anyPoint != null)
+            {
+                Plugin.Logger.LogInfo(
+                    "[TrapHandler] MonsterSpawn: no LOS-clear point in 100 attempts — using any PatrolPoint.");
+                return anyPoint.transform.position;
+            }
+
+            return PlayerCenteredFallback(local);
+        }
+
+        private static Vector3 PlayerCenteredFallback(Player local)
+        {
+            Vector2 circle = UnityEngine.Random.insideUnitCircle * FallbackSpawnOffsetRadius;
+            return local.Center() + new Vector3(circle.x, 0f, circle.y);
+        }
+
+        // ================================================================== Teleport-closer coroutine
+
+        /// <summary>
+        /// Waits <paramref name="delay"/> seconds, then invokes
+        /// <c>Bot.Teleport(Level.GetClosestHiddenPoint(player.Center()))</c>
+        /// — the vanilla "ambush from out of sight near the player" pattern
+        /// used by <c>Puppetmonster.Intervene</c>.  Both target methods are
+        /// <c>internal</c>, so this goes through reflection.
+        /// </summary>
+        private static IEnumerator TeleportCloserAfterDelay(Bot bot, float delay, string monsterName)
+        {
+            yield return new WaitForSeconds(delay);
+
+            if (bot == null || bot.gameObject == null)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[TrapHandler] MonsterSpawn: '{monsterName}' was destroyed before teleport-closer fired.");
+                yield break;
+            }
+
+            var local = Player.localPlayer;
+            if ((object)local == null)
+            {
+                Plugin.Logger.LogInfo(
+                    $"[TrapHandler] MonsterSpawn: local player gone before teleport-closer fired — " +
+                    $"leaving '{monsterName}' at original spawn point.");
+                yield break;
+            }
+
+            EnsureReflectionInitialised();
+            if (_botTeleport == null || _getClosestHiddenPoint == null || Level.currentLevel == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[TrapHandler] MonsterSpawn: teleport-closer reflection unavailable — " +
+                    "monster will not ambush.");
+                yield break;
+            }
+
+            object? hiddenPoint;
+            try
+            {
+                hiddenPoint = _getClosestHiddenPoint.Invoke(
+                    Level.currentLevel, new object[] { local.Center(), false });
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn: GetClosestHiddenPoint threw: {ex.Message}");
+                yield break;
+            }
+
+            if (hiddenPoint is not PatrolPoint pp || pp == null)
+            {
+                Plugin.Logger.LogInfo(
+                    "[TrapHandler] MonsterSpawn: no hidden point near player — leaving monster at spawn.");
+                yield break;
+            }
+
+            try
+            {
+                _botTeleport.Invoke(bot, new object[] { pp.transform.position });
+                Plugin.Logger.LogInfo(
+                    $"[TrapHandler] MonsterSpawn: teleported '{monsterName}' to {pp.transform.position} " +
+                    $"(near {local.refs.view.Controller.NickName}).");
+            }
+            catch (System.Exception ex)
+            {
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn: Bot.Teleport threw: {ex.Message}");
+            }
+        }
+
+        private static void EnsureReflectionInitialised()
+        {
+            if (_reflectionInitialised) return;
+            _reflectionInitialised = true;
+
+            _botTeleport = AccessTools.Method(typeof(Bot), "Teleport", new[] { typeof(Vector3) });
+            if (_botTeleport == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[TrapHandler] AccessTools could not resolve Bot.Teleport(Vector3).");
+            }
+
+            _getClosestHiddenPoint = AccessTools.Method(
+                typeof(Level), "GetClosestHiddenPoint", new[] { typeof(Vector3), typeof(bool) });
+            if (_getClosestHiddenPoint == null)
+            {
+                Plugin.Logger.LogWarning(
+                    "[TrapHandler] AccessTools could not resolve Level.GetClosestHiddenPoint(Vector3, bool).");
             }
         }
 
         // ================================================================== Spawn retry coroutine
 
-        /// <summary>
-        /// Waits <paramref name="delay"/> seconds, then re-attempts the monster spawn
-        /// using the already-chosen monster and position.  This handles the case where
-        /// <c>BotHandler.instance</c> was null immediately after scene load.
-        /// </summary>
-        private static IEnumerator RetrySpawnAfterDelay(
-            Player local, string chosenMonster, Vector3 spawnPos, float delay)
+        private static IEnumerator RetrySpawnAfterDelay(Player local, string chosenMonster, float delay)
         {
             Plugin.Logger.LogInfo(
                 $"[TrapHandler] MonsterSpawn (retry): waiting {delay} s for scene to finish " +
@@ -241,19 +385,33 @@ namespace ContentWarningArchipelago.Patches
                 yield break;
             }
 
-            Plugin.Logger.LogInfo(
-                $"[TrapHandler] MonsterSpawn (retry): spawning '{chosenMonster}' " +
-                $"near {local.refs.view.Controller.NickName} at {spawnPos}.");
+            // Re-pick the spawn position now that BotHandler is up — the
+            // earlier ChooseRemoteSpawnPosition call would have run before
+            // PatrolPoints were registered.
+            Vector3 spawnPos = ChooseRemoteSpawnPosition(local);
 
+            Plugin.Logger.LogInfo(
+                $"[TrapHandler] MonsterSpawn (retry): spawning '{chosenMonster}' at {spawnPos}.");
+
+            GameObject? spawned;
             try
             {
-                MonsterSpawner.SpawnMonster(chosenMonster, spawnPos);
+                spawned = MonsterSpawner.SpawnMonster(chosenMonster, spawnPos);
             }
-            catch (Exception ex)
+            catch (System.Exception ex)
             {
                 Plugin.Logger.LogWarning(
                     $"[TrapHandler] MonsterSpawn (retry) failed for '{chosenMonster}': {ex.Message}");
+                yield break;
             }
+
+            if (spawned == null) yield break;
+
+            var bot = spawned.GetComponent<Bot>() ?? spawned.GetComponentInChildren<Bot>();
+            if (bot == null) yield break;
+
+            float teleportDelay = UnityEngine.Random.Range(3f, 5f);
+            Plugin.Instance.StartCoroutine(TeleportCloserAfterDelay(bot, teleportDelay, chosenMonster));
         }
     }
 }
