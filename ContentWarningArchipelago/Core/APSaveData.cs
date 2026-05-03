@@ -23,9 +23,37 @@ namespace ContentWarningArchipelago.Core
         /// </summary>
         public int itemReceivedIndex = 0;
 
-        /// <summary>AP slot data values cached on connect (read from server).</summary>
-        public int  quotaCount        = 5;      // how many quotas the world uses
-        public bool viralSensationGoal = true;  // win condition is "Viral Sensation"
+        // ------------------------------------------------------------------ AP slot data cache
+        // Populated on each connect from ArchipelagoSession.SlotData.  Persisted
+        // here so reconnects after a crash still have the values handy without a
+        // re-handshake.  Field names match the apworld fill_slot_data keys
+        // (cw-apworld/__init__.py).  Defaults match the apworld defaults so a
+        // mid-implementation slot that omits a key still behaves sensibly.
+
+        public int  quotaCount       = 5;
+        public bool quotaRequirement = true;
+
+        // Goal toggles — any combination may be active; all enabled goals must
+        // be satisfied to win (AND semantics).  At least one is always on.
+        public bool viralSensationGoal = true;
+        public bool viewsGoal          = false;
+        public bool quotaGoal          = false;
+        public bool monsterHunterGoal  = false;
+        public bool hatCollectorGoal   = false;
+
+        // Goal thresholds.
+        public int viewsGoalTarget     = 500_000;
+        public int monsterHunterCount  = 12;
+        public int hatCollectorCount   = 15;
+
+        // Pool toggles.
+        public bool viewsChecks         = true;
+        public bool includeSponsorships = true;
+        public bool sponsorFiller       = true;
+        public bool difficultMonsters   = false;
+        public bool monsterTiersEnabled = false;
+        public bool fillerMultiSightings = true;
+        public bool multiplayerMode     = false;
 
         // ------------------------------------------------------------------ Progressive item levels
         // These are incremented each time the matching AP item is received and
@@ -99,14 +127,30 @@ namespace ContentWarningArchipelago.Core
         /// </summary>
         public int pendingMoney = 0;
 
-        // ------------------------------------------------------------------ Monster / artifact tiers
+        // ------------------------------------------------------------------ Views tracking
+        // Tracked locally on the master client (the only place AddQuota fires).
+        // Persisted across reconnects so a crash mid-quota doesn't reset
+        // progress.  Quota cycle resets on quota pass/fail.
 
-        /// <summary>
-        /// True when the AP world was generated with <c>monster_tiers</c> enabled.
-        /// Cached from slot data on connect; used by <c>ContentEvaluatorPatch</c> to
-        /// decide whether to attempt tier 2/3 filming checks.
-        /// </summary>
-        public bool monsterTiersEnabled = false;
+        /// <summary>Cumulative views earned across all extractions.  Drives
+        /// the "Reached N Total Views" milestone checks.</summary>
+        public long lifetimeViews = 0L;
+
+        /// <summary>Views earned strictly within the current 3-day quota
+        /// cycle.  Drives the Viral Sensation event (1,000,000 in a quota).
+        /// Reset by NewWeek (success) and RPC_QuotaFailed (failure).</summary>
+        public long currentQuotaViews = 0L;
+
+        /// <summary>True once "Viral Sensation Achieved" has been fired in the
+        /// current quota.  Reset alongside <see cref="currentQuotaViews"/>.</summary>
+        public bool viralSensationFiredThisQuota = false;
+
+        // ------------------------------------------------------------------ Sponsorships
+        // Number of sponsorships completed across the entire AP slot.  Used as
+        // the index for the next "Completed Sponsorship N" check.  Persists
+        // across run loss/restart per issue #5 Q3 (apworld answer 3).
+
+        public int sponsorshipsCompleted = 0;
 
         // ------------------------------------------------------------------ Hat shop (session-only)
 

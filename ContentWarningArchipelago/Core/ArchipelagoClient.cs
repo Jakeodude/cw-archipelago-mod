@@ -138,12 +138,10 @@ namespace ContentWarningArchipelago.Core
                 // Initialise (or load) the per-slot save file.
                 APSave.Init(playerName, seed);
 
-                // Cache slot-data values we care about.
-                if (slotData.TryGetValue("quota_count", out var qc))
-                    APSave.saveData.quotaCount = Convert.ToInt32(qc);
-
-                if (slotData.TryGetValue("monster_tiers", out var mt))
-                    APSave.saveData.monsterTiersEnabled = Convert.ToBoolean(mt);
+                // Cache slot-data values we care about.  Keys mirror
+                // cw-apworld/__init__.py fill_slot_data exactly.  Missing keys
+                // leave the APSaveData defaults in place.
+                CacheSlotData();
 
                 // ---- Resync items the server already sent while we were offline ----
                 _itemIndex = APSave.saveData.itemReceivedIndex;
@@ -360,6 +358,47 @@ namespace ContentWarningArchipelago.Core
         }
 
         // ================================================================== HELPERS
+
+        /// <summary>
+        /// Pulls the apworld slot-data dictionary into the per-slot APSaveData
+        /// cache.  Keys mirror <c>cw-apworld/__init__.py</c> <c>fill_slot_data</c>
+        /// exactly.  Missing keys leave the APSaveData defaults in place so a
+        /// future apworld revision that omits a key falls back gracefully.
+        /// </summary>
+        private void CacheSlotData()
+        {
+            if (slotData == null) return;
+            var s = APSave.saveData;
+
+            if (slotData.TryGetValue("quota_count",            out var v)) s.quotaCount            = Convert.ToInt32(v);
+            if (slotData.TryGetValue("quota_requirement",      out v))     s.quotaRequirement      = Convert.ToBoolean(v);
+
+            if (slotData.TryGetValue("viral_sensation",        out v))     s.viralSensationGoal    = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("views_goal",             out v))     s.viewsGoal             = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("quota_goal",             out v))     s.quotaGoal             = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("monster_hunter",         out v))     s.monsterHunterGoal     = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("hat_collector",          out v))     s.hatCollectorGoal      = Convert.ToBoolean(v);
+
+            if (slotData.TryGetValue("views_goal_target",      out v))     s.viewsGoalTarget       = Convert.ToInt32(v);
+            if (slotData.TryGetValue("monster_hunter_count",   out v))     s.monsterHunterCount    = Convert.ToInt32(v);
+            if (slotData.TryGetValue("hat_collector_count",    out v))     s.hatCollectorCount     = Convert.ToInt32(v);
+
+            if (slotData.TryGetValue("views_checks",           out v))     s.viewsChecks           = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("include_sponsorships",   out v))     s.includeSponsorships   = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("sponsor_filler",         out v))     s.sponsorFiller         = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("difficult_monsters",     out v))     s.difficultMonsters     = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("monster_tiers",          out v))     s.monsterTiersEnabled   = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("filler_multi_sightings", out v))     s.fillerMultiSightings  = Convert.ToBoolean(v);
+            if (slotData.TryGetValue("multiplayer_mode",       out v))     s.multiplayerMode       = Convert.ToBoolean(v);
+
+            APSave.Flush();
+
+            Plugin.Logger.LogInfo(
+                $"[AP] Slot data cached — quotaCount={s.quotaCount}, " +
+                $"goals=[viral={s.viralSensationGoal}, views={s.viewsGoal}, quota={s.quotaGoal}, " +
+                $"monsters={s.monsterHunterGoal}, hats={s.hatCollectorGoal}], " +
+                $"viewsTarget={s.viewsGoalTarget}, sponsors={s.includeSponsorships}.");
+        }
 
         /// <summary>
         /// Thread-safe alternative to ActivateCheck when calling from a non-main thread.

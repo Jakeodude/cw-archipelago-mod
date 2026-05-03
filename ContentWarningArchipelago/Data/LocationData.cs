@@ -19,32 +19,20 @@ namespace ContentWarningArchipelago.Data
             // ==================== BASIC EXTRACTION & DAY CHECKS ====================
             Register(LocationNames.AnyExtraction, 0);
 
-            for (int day = 1; day <= 15; day++)
+            // Days 1..63 at offsets 1..63 (apworld create_regions caps to QuotaCount*3).
+            for (int day = 1; day <= 63; day++)
                 Register(LocationNames.ExtractedFootagePrefix + day, day);
 
             // ==================== QUOTA CHECKS ====================
-            // offsets 100–109
-            for (int q = 1; q <= 10; q++)
+            // 21 quotas at offsets 100..120 (apworld caps to QuotaCount).
+            for (int q = 1; q <= 21; q++)
                 Register(LocationNames.MetQuotaPrefix + q, 100 + (q - 1));
 
-            // ==================== VIEW MILESTONES (offsets 200–216) ====================
-            Register(LocationNames.Reached1k,   200);
-            Register(LocationNames.Reached2k,   201);
-            Register(LocationNames.Reached3k,   202);
-            Register(LocationNames.Reached13k,  203);
-            Register(LocationNames.Reached26k,  204);
-            Register(LocationNames.Reached39k,  205);
-            Register(LocationNames.Reached43k,  206);
-            Register(LocationNames.Reached85k,  207);
-            Register(LocationNames.Reached128k, 208);
-            Register(LocationNames.Reached150k, 209);
-            Register(LocationNames.Reached220k, 210);
-            Register(LocationNames.Reached325k, 211);
-            Register(LocationNames.Reached375k, 212);
-            Register(LocationNames.Reached430k, 213);
-            Register(LocationNames.Reached645k, 214);
-            Register(LocationNames.Reached850k, 215);
-            Register(LocationNames.Reached1m,   216);
+            // ==================== VIEW MILESTONES (offsets 200..262) ====================
+            // One per in-game day — see ViewMilestones.Table for the canonical totals.
+            // apworld activates only the milestones <= reachable cap; missing IDs are fine.
+            foreach (var (day, total) in ViewMilestones.Table)
+                Register(LocationNames.ReachedTotalViews(total), 199 + day);
 
             // ==================== MONSTER FILMING (offsets 300–329) ====================
             Register("Filmed Slurper",       300);
@@ -245,14 +233,19 @@ namespace ContentWarningArchipelago.Data
             Register("Bought Hard Hat",      629);
             Register("Bought Savannah Hair", 630);
 
-            // ==================== SPONSORSHIPS (offsets 700–706) ====================
-            Register(LocationNames.AcceptedSponsorshipPrefix  + "1",         700);
-            Register(LocationNames.AcceptedSponsorshipPrefix  + "2",         701);
-            Register(LocationNames.AcceptedSponsorshipPrefix  + "3",         702);
-            Register(LocationNames.CompletedSponsorshipPrefix + "Easy",      703);
-            Register(LocationNames.CompletedSponsorshipPrefix + "Medium",    704);
-            Register(LocationNames.CompletedSponsorshipPrefix + "Hard",      705);
-            Register(LocationNames.CompletedSponsorshipPrefix + "Very Hard", 706);
+            // ==================== SPONSORSHIPS (offsets 700..719) ====================
+            // 20 progressive sponsorship-completion checks.  apworld activates
+            // only the first (QuotaCount - 1, max 20).  Counter persists across
+            // run loss/restart in APSaveData.sponsorshipsCompleted.
+            for (int s = 1; s <= 20; s++)
+                Register(LocationNames.CompletedSponsorshipPrefix + s, 699 + s);
+
+            // ==================== VIRAL SENSATION (offset 800) ====================
+            // Client-emitted check fired when the player crosses 1,000,000 views
+            // in a single quota.  Only created in the world when viral_sensation
+            // is on, but the mod fires it unconditionally — apworld ignores
+            // checks for inactive locations.
+            Register(LocationNames.ViralSensationAchieved, 800);
         }
 
         // ------------------------------------------------------------------

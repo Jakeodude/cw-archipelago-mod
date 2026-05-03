@@ -7,6 +7,7 @@
 // the existing oxygen text so the player can see:
 //   • Whether the AP session is connected
 //   • The name of the last item they received from AP
+//   • Current-quota and lifetime view counts (issue #7 Q5 follow-up)
 //
 // This gives useful in-game feedback without creating any new UI elements —
 // we reuse the already-rendered text field the game already manages.
@@ -46,6 +47,28 @@ namespace ContentWarningArchipelago.Patches
 
                 if (connected && !string.IsNullOrEmpty(LastItemName))
                     statusLine += $"\n<size=60%>Last item: {LastItemName}</size>";
+
+                // Views readout — keeps the player aware of progress toward the
+                // Views Goal / Viral Sensation goal without opening the AP server.
+                // Only shown when connected and the world has any views-related
+                // configuration (views_checks, views_goal, or viral_sensation).
+                if (connected)
+                {
+                    var s = APSave.saveData;
+                    bool showViews = s.viewsChecks || s.viewsGoal || s.viralSensationGoal;
+                    if (showViews)
+                    {
+                        statusLine += $"\n<size=60%>Lifetime views: {s.lifetimeViews:N0}";
+                        if (s.viewsGoal && s.viewsGoalTarget > 0)
+                            statusLine += $" / {s.viewsGoalTarget:N0}";
+                        statusLine += "</size>";
+
+                        if (s.viralSensationGoal)
+                        {
+                            statusLine += $"\n<size=60%>This quota: {s.currentQuotaViews:N0} / 1,000,000</size>";
+                        }
+                    }
+                }
 
                 // Append below the existing oxygen text.
                 // Better_Diving_Bell_UI writes directly to m_oxygenText.text;
