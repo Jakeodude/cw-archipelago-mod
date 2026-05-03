@@ -226,7 +226,7 @@ namespace ContentWarningArchipelago.Data
                     APNotificationUI.ShowItemReceived(name, senderName);
                     Plugin.Logger.LogInfo(
                         $"[ItemData] Progressive Stamina level {APSave.saveData.staminaUpgradeLevel} — " +
-                        $"maxStamina {100 + APSave.saveData.staminaUpgradeLevel * 25}.");
+                        $"max × {1f + 0.25f * APSave.saveData.staminaUpgradeLevel:0.##}.");
                     break;
                 }
 

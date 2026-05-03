@@ -14,7 +14,12 @@
 //   PlayerData automatically — no additional CurrentStamina assignment needed
 //   at spawn time.
 //
-//   Formula : maxStamina = 100 + staminaUpgradeLevel × 25
+//   Formula : maxStamina = baseMaxStamina × (1 + 0.25 × staminaUpgradeLevel)
+//             — matches issue #13 (level 4 = 200 % of vanilla cap).  We capture
+//             baseMaxStamina from the prefab on the very first Player.Awake
+//             (before our patch mutates it).  Hardcoding 100 was wrong: the
+//             vanilla PlayerController prefab ships with maxStamina ≈ 10, so
+//             100 + level × 25 produced an effectively infinite sprint bar.
 //   Sync    : ProgressionStatsPatch.ApplyStaminaUpgrade(level) re-applies to the
 //             live local player when an item arrives mid-game.
 //
@@ -80,24 +85,36 @@ namespace ContentWarningArchipelago.Patches
     [HarmonyPatch(typeof(Player), "Awake")]
     internal static class StaminaUpgradePatch
     {
+        // Captured from the prefab on the very first Player.Awake — before our
+        // own Postfix mutates controller.maxStamina.  Unity instantiates the
+        // PlayerController fresh from the prefab on every spawn, so this field
+        // always sees the unmodified vanilla value.  -1 means "not yet seen".
+        internal static float baseMaxStamina = -1f;
+
         [HarmonyPostfix]
         private static void Postfix(Player __instance)
         {
+            // refs.controller is not set until Player.Start(); use GetComponent.
+            var controller = __instance.GetComponent<PlayerController>();
+            if (controller == null) return;
+
+            // Capture the vanilla cap once.  Done outside the connected/level
+            // guards so we still record it even if the player spawns before
+            // connecting to AP, or before any Progressive Stamina arrives.
+            if (baseMaxStamina < 0f) baseMaxStamina = controller.maxStamina;
+
             if (!Plugin.connection.connected) return;
 
             int level = APSave.saveData.staminaUpgradeLevel;
             if (level <= 0) return;
 
-            // refs.controller is not set until Player.Start(); use GetComponent.
-            var controller = __instance.GetComponent<PlayerController>();
-            if (controller == null) return;
-
-            float newMax = 100f + level * 25f;
+            float newMax = baseMaxStamina * (1f + 0.25f * level);
             controller.maxStamina = newMax;
 
             Plugin.Logger.LogInfo(
                 $"[StaminaUpgradePatch] Player.Awake — maxStamina set to {newMax} " +
-                $"(level {level}). PlayerController.Start will initialise currentStamina.");
+                $"(base {baseMaxStamina}, level {level}). PlayerController.Start " +
+                $"will initialise currentStamina.");
         }
     }
 
@@ -300,15 +317,21 @@ namespace ContentWarningArchipelago.Patches
             var controller = Player.localPlayer.GetComponent<PlayerController>();
             if (controller == null) return;
 
-            float newMax = 100f + level * 25f;
+            // Mid-game items always arrive after the local player has spawned,
+            // so StaminaUpgradePatch.Postfix has already captured baseMaxStamina.
+            // Fallback to the vanilla C# default of 10 if (somehow) it has not.
+            float baseMax = StaminaUpgradePatch.baseMaxStamina > 0f
+                ? StaminaUpgradePatch.baseMaxStamina
+                : 10f;
+            float newMax = baseMax * (1f + 0.25f * level);
             controller.maxStamina = newMax;
 
             // Also update currentStamina so the bar refills to the new cap immediately.
             Player.localPlayer.data.currentStamina = newMax;
 
             Plugin.Logger.LogInfo(
-                $"[ProgressionStatsPatch] Stamina sync — maxStamina={newMax}, " +
-                $"currentStamina={newMax} (level {level}).");
+                $"[ProgressionStatsPatch] Stamina sync — base={baseMax}, " +
+                $"maxStamina={newMax}, currentStamina={newMax} (level {level}).");
         }
 
         /// <summary>
