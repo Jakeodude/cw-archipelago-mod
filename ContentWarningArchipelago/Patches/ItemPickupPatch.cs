@@ -449,8 +449,11 @@ namespace ContentWarningArchipelago.Patches
                 }
 
                 // ---- b) Extracted Footage on Day N ------------------------------------
+                // Day range 1..63 covers the QuotaCount=21 max case (day = QC*3).
+                // apworld activates only the first QuotaCount*3 days; checks for
+                // higher days are silently ignored server-side.
                 int day = TryGetCurrentDay();
-                if (day > 0 && day <= 15)
+                if (day > 0 && day <= 63)
                 {
                     string dayLocName = LocationNames.ExtractedFootagePrefix + day;
                     long dayLocId = LocationData.GetId(dayLocName);
