@@ -52,6 +52,15 @@ namespace ContentWarningArchipelago.Core
         public int staminaUpgradeLevel = 0;
 
         /// <summary>
+        /// How many "Progressive Stamina Regen" copies have been received (0–2).
+        /// Each copy adds 0.5 × <c>Time.deltaTime</c> of extra stamina recovery
+        /// per frame, so total regen rate = base × (1 + 0.5 × level) — 150 % at
+        /// level 1, 200 % at level 2.  Applied by
+        /// <c>ProgressionStatsPatch.StaminaRegenUpgradePatch</c>.
+        /// </summary>
+        public int staminaRegenUpgradeLevel = 0;
+
+        /// <summary>
         /// How many "Progressive Views" copies have been received (0–12).
         /// Each copy multiplies the score→views conversion by 1.1×.
         /// </summary>

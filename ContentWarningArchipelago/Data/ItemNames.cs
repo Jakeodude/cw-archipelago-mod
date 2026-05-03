@@ -19,7 +19,8 @@ namespace ContentWarningArchipelago.Data
         public const string ProgViews       = "Progressive Views";    // 12 copies
 
         // ---- Progressive Stamina ----
-        public const string ProgStamina     = "Progressive Stamina";  // 4 copies
+        public const string ProgStamina      = "Progressive Stamina";        // 4 copies
+        public const string ProgStaminaRegen = "Progressive Stamina Regen";  // 2 copies
 
         // ---- Rescue / Safety ----
         public const string RescueHook    = "Rescue Hook";
