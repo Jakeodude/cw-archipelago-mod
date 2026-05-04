@@ -24,6 +24,12 @@ namespace ContentWarningArchipelago.Data
         // Per-completion trigger; counter persists across run loss/restart.
         public const string CompletedSponsorshipPrefix = "Completed Sponsorship ";  // + N, 1..20
 
+        // ---- Chorby collectible (issue #14) ----
+        // One per Chorby pickup; counter persists across run loss/restart.
+        // apworld activates exactly QuotaCount of these (max 21).
+        public const string FoundChorbyPrefix = "Found Chorby ";  // + N, 1..21
+        public const string AllChorbyChecksFound = "All Chorby checks found";
+
         // ---- Viral Sensation event ----
         public const string ViralSensationAchieved = "Viral Sensation Achieved";
 

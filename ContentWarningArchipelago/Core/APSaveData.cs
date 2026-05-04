@@ -152,6 +152,21 @@ namespace ContentWarningArchipelago.Core
 
         public int sponsorshipsCompleted = 0;
 
+        // ------------------------------------------------------------------ Chorby pickups (issue #14)
+        // Number of Chorbies picked up across the entire AP slot.  Used as the
+        // index for the next "Found Chorby N" check.  Persists across run
+        // loss/restart per issue #14.  Once it exceeds quotaCount, the
+        // SpawningPatch keeps spawning Chorby every dive but the PickupPatch
+        // destroys it silently and (once) broadcasts the lobby toast tracked by
+        // <see cref="allChorbyChecksFoundNotified"/>.
+
+        public int chorbiesFound = 0;
+
+        /// <summary>True once the "All Chorby checks found" lobby toast has
+        /// fired.  Suppresses repeat broadcasts on subsequent post-quota
+        /// pickups.</summary>
+        public bool allChorbyChecksFoundNotified = false;
+
         // ------------------------------------------------------------------ Hat shop (session-only)
 
         /// <summary>

@@ -240,6 +240,13 @@ namespace ContentWarningArchipelago.Data
             for (int s = 1; s <= 20; s++)
                 Register(LocationNames.CompletedSponsorshipPrefix + s, 699 + s);
 
+            // ==================== FOUND CHORBY (offsets 720..740) ====================
+            // 21 progressive Chorby-pickup checks.  apworld activates exactly
+            // QuotaCount of them.  Counter persists across run loss/restart in
+            // APSaveData.chorbiesFound (issue #14).
+            for (int c = 1; c <= 21; c++)
+                Register(LocationNames.FoundChorbyPrefix + c, 719 + c);
+
             // ==================== VIRAL SENSATION (offset 800) ====================
             // Client-emitted check fired when the player crosses 1,000,000 views
             // in a single quota.  Only created in the world when viral_sensation
