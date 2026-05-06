@@ -1,7 +1,7 @@
 {
     "name": "ContentWarningArchipelago",
     "version_number": "1.0.0",
-    "website_url": "https://github.com/your-username/cw-archipelago-mod",
+    "website_url": "https://github.com/Jakeodude/cw-archipelago-mod",
     "description": "An Archipelago randomizer client for Content Warning!",
     "dependencies": [
         "BepInEx-BepInExPack-5.4.2100",
