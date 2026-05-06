@@ -27,7 +27,7 @@ jobs:
           find . -name "ContentWarningArchipelago.dll" -type f -exec cp {} staging/ \;
           # Copy Thunderstore required files
           cp icon.png staging/
-          cp README.md staging/
+          cp THUNDERSTORE_README.md staging/README.md
           cp manifest.json staging/
 
       - name: Upload to Thunderstore
