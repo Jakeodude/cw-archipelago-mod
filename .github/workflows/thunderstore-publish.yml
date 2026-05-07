@@ -35,8 +35,10 @@ jobs:
           name: ContentWarningArchipelago
           version: 1.0.0
           community: content-warning
+          repo: https://thunderstore.io
           description: "An Archipelago randomizer client for Content Warning!"
-          categories: Mods
+          categories: |
+            Mods
           deps: |
             BepInEx-BepInExPack-5.4.2100
             RugbugRedfern-MyceliumNetworking-1.0.4
