@@ -41,5 +41,5 @@ jobs:
             Mods
           deps: |
             BepInEx-BepInExPack-5.4.2100
-            RugbugRedfern-MyceliumNetworking-1.0.4
+            RugbugRedfern-MyceliumNetworking-1.0.14
           path: ./staging
