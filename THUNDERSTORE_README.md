@@ -4,7 +4,7 @@
 Archipelago is a multi-game open-source randomizer that combines a variety of games into a single multiplayer experience. More information at https://archipelago.gg/
 
 ## Multiworld Setup Instructions
-1. Download the latest `content_warning.apworld` file from our GitHub releases here https://github.com/Jakeodude/cw-apworld.
+1. Download the latest `content_warning.apworld` file from our GitHub releases here https://github.com/Jakeodude/cw-apworld/releases.
 2. Follow the instructions on https://archipelago.gg/tutorial/Archipelago/setup/en on generating a game. Note that you will have to place the `.apworld` file in the `lib/worlds` folder of your Archipelago install and generate the world locally.
 3. Using the Archipelago.gg website or a local machine, host a server using the output file generated.
 
