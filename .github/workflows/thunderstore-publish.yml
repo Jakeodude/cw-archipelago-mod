@@ -1,0 +1,47 @@
+name: Publish to Thunderstore
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build C# Mod
+        run: dotnet build ContentWarningArchipelago/ContentWarningArchipelago.csproj -c Release
+
+      - name: Prepare Staging Folder
+        run: |
+          mkdir -p staging
+          cp icon.png staging/
+          cp THUNDERSTORE_README.md staging/README.md
+          find . -name "ContentWarningArchipelago.dll" -exec cp {} staging/ \;
+          find . -name "Archipelago.MultiClient.Net.dll" -exec cp {} staging/ \;
+
+      - name: Upload to Thunderstore
+        uses: GreenTF/upload-thunderstore-package@v4.3
+        with:
+          token: ${{ secrets.THUNDERSTORE_TOKEN }}
+          namespace: Faust
+          name: ContentWarningArchipelago
+          version: 1.0.2
+          community: content-warning
+          repo: https://thunderstore.io
+          website: https://github.com/Jakeodude/cw-apworld/releases
+          description: "An Archipelago randomizer client for Content Warning!"
+          categories: |
+            Mods
+          deps: |
+            BepInEx-BepInExPack-5.4.2100
+            RugbugRedfern-MyceliumNetworking-1.0.14
+          path: ./staging

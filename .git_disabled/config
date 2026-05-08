@@ -1,0 +1,59 @@
+[core]
+	repositoryformatversion = 0
+	filemode = false
+	bare = false
+	logallrefupdates = true
+	symlinks = false
+	ignorecase = true
+[remote "origin"]
+	url = https://github.com/Jakeodude/cw-archipelago-mod.git
+	fetch = +refs/heads/*:refs/remotes/origin/*
+[branch "main"]
+	remote = origin
+	merge = refs/heads/main
+[branch "fix/issue-5-monster-multichecks"]
+	remote = origin
+	merge = refs/heads/fix/issue-5-monster-multichecks
+	vscode-merge-base = origin/fix/issue-5-monster-multichecks
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#17"
+[branch "fix/issue-3-hatshop-ui"]
+	remote = origin
+	merge = refs/heads/fix/issue-3-hatshop-ui
+	vscode-merge-base = origin/fix/issue-3-hatshop-ui
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#15"
+[branch "fix/issue-4-hatshop-refresh-filter"]
+	remote = origin
+	merge = refs/heads/fix/issue-4-hatshop-refresh-filter
+	vscode-merge-base = origin/fix/issue-4-hatshop-refresh-filter
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#16"
+[branch "fix/issue-3-money-overhaul"]
+	remote = origin
+	merge = refs/heads/fix/issue-3-money-overhaul
+	vscode-merge-base = origin/fix/issue-3-money-overhaul
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#20"
+[branch "fix/issue-10-meta-coins-datastorage"]
+	remote = origin
+	merge = refs/heads/fix/issue-10-meta-coins-datastorage
+	vscode-merge-base = origin/fix/issue-10-meta-coins-datastorage
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#18"
+[branch "fix/issue-11-trap-refactor"]
+	remote = origin
+	merge = refs/heads/fix/issue-11-trap-refactor
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#22"
+[branch "fix/issue-13-stamina-regen"]
+	remote = origin
+	merge = refs/heads/fix/issue-13-stamina-regen
+	vscode-merge-base = origin/fix/issue-13-stamina-regen
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#23"
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#23"
+[branch "fix/issue-7-views-and-sponsorships"]
+	remote = origin
+	merge = refs/heads/fix/issue-7-views-and-sponsorships
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#24"
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#24"
+[branch "fix/issue-14-chorby-collectable"]
+	remote = origin
+	merge = refs/heads/fix/issue-14-chorby-collectable
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#25"
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#25"
+	github-pr-owner-number = "Jakeodude#cw-archipelago-mod#25"
