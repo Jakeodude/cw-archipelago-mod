@@ -322,33 +322,20 @@ namespace ContentWarningArchipelago.Core
             }
 
             // ---- Views Goal -----------------------------------------------------
-            // Find the nearest milestone at or above viewsGoalTarget (mirrors the
-            // server-side _get_views_goal_milestone() logic in rules.py), then
-            // verify that milestone location has been checked.
+            // Compare the locally-tracked lifetime view count directly against the
+            // slot-data target using >=.  The old approach resolved the target to a
+            // milestone location and checked whether that location had been sent;
+            // this broke when the target (e.g. 175,000) fell between two milestone
+            // table entries (127,333 and 170,000), causing the code to require the
+            // NEXT milestone (278,333) which the player had not yet crossed.
             if (s.viewsGoal)
             {
-                int  target       = s.viewsGoalTarget;
-                long milestoneLoc = -1L;
-
-                foreach (var (_, total) in ViewMilestones.Table)
-                {
-                    if (total >= target)
-                    {
-                        milestoneLoc = LocationData.GetId(LocationNames.ReachedTotalViews(total));
-                        break;
-                    }
-                }
-
-                // Target above the table — clamp to the highest milestone.
-                if (milestoneLoc < 0)
-                    milestoneLoc = LocationData.GetId(
-                        LocationNames.ReachedTotalViews(ViewMilestones.MaxLifetimeViews));
-
-                if (milestoneLoc < 0 || !APSave.IsLocationChecked(milestoneLoc))
+                long lifetimeViews = APSave.saveData.lifetimeViews;
+                if (lifetimeViews < s.viewsGoalTarget)
                 {
                     Plugin.Logger.LogDebug(
-                        $"[AP] CheckWinCondition: Views Goal milestone not yet reached " +
-                        $"(target={target:N0}).");
+                        $"[AP] CheckWinCondition: Views Goal not yet reached " +
+                        $"({lifetimeViews:N0} / {s.viewsGoalTarget:N0} lifetime views).");
                     return;
                 }
             }

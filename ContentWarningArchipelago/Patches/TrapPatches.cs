@@ -142,7 +142,21 @@ namespace ContentWarningArchipelago.Patches
         {
             Plugin.Logger.LogInfo("[TrapHandler] MonsterSpawn (deferred): waiting for old world…");
 
-            yield return new WaitUntil(() => SurfaceNetworkHandler.Instance == null);
+            // Wake up either when underground (SurfaceNetworkHandler gone) OR when
+            // the player leaves the Photon room entirely (e.g. disconnects to the
+            // main menu).  Without the second clause the coroutine would wrongly
+            // resume in the main menu because SNH is also null there.
+            yield return new WaitUntil(() => SurfaceNetworkHandler.Instance == null || !PhotonNetwork.InRoom);
+
+            // If we woke up because the player left the room rather than going
+            // underground, abort — there is no valid game world to spawn into.
+            if (!PhotonNetwork.InRoom)
+            {
+                Plugin.Logger.LogWarning(
+                    "[TrapHandler] MonsterSpawn (deferred): player left the Photon room " +
+                    "(returned to main menu?) — spawn aborted.");
+                yield break;
+            }
 
             var local = Player.localPlayer;
             if ((object)local == null)
@@ -272,7 +286,21 @@ namespace ContentWarningArchipelago.Patches
         private static Vector3 PlayerCenteredFallback(Player local)
         {
             Vector2 circle = UnityEngine.Random.insideUnitCircle * FallbackSpawnOffsetRadius;
-            return local.Center() + new Vector3(circle.x, 0f, circle.y);
+            try
+            {
+                return local.Center() + new Vector3(circle.x, 0f, circle.y);
+            }
+            catch (System.Exception ex)
+            {
+                // local.Center() can NRE if the player's internal refs are torn
+                // down (e.g. during a main-menu transition that slipped past the
+                // PhotonNetwork.InRoom guard above).  Log and abort gracefully
+                // rather than propagating an unhandled exception.
+                Plugin.Logger.LogWarning(
+                    $"[TrapHandler] MonsterSpawn: PlayerCenteredFallback failed " +
+                    $"({ex.Message}) — player state invalid, spawn aborted.");
+                return Vector3.zero;
+            }
         }
 
         // ================================================================== Teleport-closer coroutine
