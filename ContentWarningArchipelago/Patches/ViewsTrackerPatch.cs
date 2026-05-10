@@ -109,6 +109,15 @@ namespace ContentWarningArchipelago.Patches
                 }
 
                 APSave.Flush();
+
+                // Always re-evaluate the win condition after the views counters
+                // update.  The views_goal target may be met even when no milestone
+                // table entry was crossed this upload (e.g. target falls between
+                // two adjacent milestones), so we cannot rely solely on the
+                // milestone-crossing path above to trigger the check.
+                Plugin.Logger.LogDebug(
+                    "[ViewsTracker] Triggering win condition check after video upload.");
+                Plugin.connection.CheckWinCondition();
             }
             catch (Exception ex)
             {
