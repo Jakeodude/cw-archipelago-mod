@@ -1,6 +1,6 @@
 {
     "name": "ContentWarningArchipelago",
-    "version_number": "1.0.0",
+    "version_number": "1.0.4",
     "website_url": "https://github.com/Jakeodude/cw-archipelago-mod",
     "description": "An Archipelago randomizer client for Content Warning!",
     "dependencies": [

@@ -34,7 +34,7 @@ jobs:
           token: ${{ secrets.THUNDERSTORE_TOKEN }}
           namespace: Faust
           name: ContentWarningArchipelago
-          version: 1.0.3
+          version: 1.0.4
           community: content-warning
           repo: https://thunderstore.io
           website: https://github.com/Jakeodude/cw-apworld/releases
