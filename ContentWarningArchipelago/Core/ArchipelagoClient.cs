@@ -14,6 +14,7 @@ using Archipelago.MultiClient.Net.Helpers;
 using Archipelago.MultiClient.Net.Models;
 using Archipelago.MultiClient.Net.Packets;
 using ContentWarningArchipelago.Data;
+using ContentWarningArchipelago.Managers;
 using ContentWarningArchipelago.UI;
 using HarmonyLib;
 using MyceliumNetworking;
@@ -160,6 +161,19 @@ namespace ContentWarningArchipelago.Core
 
                 // ---- Bind the lobby-shared Meta Coins DataStorage key ----
                 InitMetaCoinsDataStorage();
+
+                // ---- Initialize Death Link if enabled ----
+                if (slotData.TryGetValue("death_link", out var dlValue) && Convert.ToInt32(dlValue) == 1)
+                {
+                    var tags = new List<string>(session.ConnectionInfo.Tags ?? new string[0]);
+                    if (!tags.Contains("DeathLink"))
+                    {
+                        tags.Add("DeathLink");
+                        session.ConnectionInfo.UpdateConnectionOptions(tags.ToArray(), ItemsHandlingFlags.AllItems);
+                    }
+                    DeathLinkManager.Initialize(session);
+                    Plugin.Logger.LogInfo("[AP] Death Link enabled and initialized.");
+                }
             }
             else
             {
