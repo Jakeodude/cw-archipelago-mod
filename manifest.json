@@ -1,10 +1,10 @@
 {
     "name": "ContentWarningArchipelago",
-    "version_number": "1.0.5",
+    "version_number": "1.0.6",
     "website_url": "https://github.com/Jakeodude/cw-archipelago-mod",
     "description": "An Archipelago randomizer client for Content Warning!",
     "dependencies": [
         "BepInEx-BepInExPack-5.4.2100",
-        "RugbugRedfern-MyceliumNetworking-1.0.4"
+        "RugbugRedfern-MyceliumNetworking-1.0.14"
     ]
 }
